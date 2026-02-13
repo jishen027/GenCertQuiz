@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 import asyncpg
 import os
 from dotenv import load_dotenv
@@ -12,6 +13,7 @@ from services.pdf_parser import PDFParser
 from services.embedder import EmbeddingService
 from services.vision import VisionService
 from services.rag_engine import RAGEngine
+from services.pdf_exporter import PDFExporter
 
 # Load environment variables
 load_dotenv()
@@ -208,6 +210,55 @@ async def generate_questions(request: QuestionRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+
+@app.post("/export-pdf")
+async def export_pdf(request: QuestionRequest):
+    """
+    Generate questions and export as PDF file.
+    
+    Request body:
+    - topic: string (required)
+    - difficulty: string (easy/medium/hard)
+    - count: int (number of questions)
+    
+    Returns:
+    - PDF file download
+    """
+    try:
+        # Generate questions (reuse same logic as /generate)
+        embedder = EmbeddingService(db_pool)
+        rag_engine = RAGEngine(db_pool, embedder)
+        
+        questions = await rag_engine.generate_questions(
+            topic=request.topic,
+            count=request.count,
+            difficulty=request.difficulty
+        )
+        
+        if not questions:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not generate questions for topic: {request.topic}"
+            )
+        
+        # Generate PDF
+        exporter = PDFExporter()
+        pdf_buffer = exporter.generate_pdf(questions, request.topic, request.difficulty)
+        
+        # Return as downloadable file
+        filename = f"{request.topic.replace(' ', '_')}_questions.pdf"
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
+
 
 
 if __name__ == "__main__":
