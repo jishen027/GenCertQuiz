@@ -3,7 +3,6 @@ Vision service using Claude Vision API for diagram and image description.
 """
 import os
 from typing import Optional
-from anthropic import AsyncAnthropic
 
 
 class VisionService:
@@ -12,20 +11,21 @@ class VisionService:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "claude-3-5-sonnet-20241022"
+        model: str = "gpt-4o"
     ):
         """
         Initialize the vision service.
         
         Args:
-            api_key: Anthropic API key (defaults to env var)
-            model: Claude model with vision capabilities
+            api_key: OpenAI API key (defaults to env var)
+            model: OpenAI model with vision capabilities (default: gpt-4o)
         """
-        api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("Anthropic API key not provided")
+            raise ValueError("OpenAI API key not provided")
         
-        self.client = AsyncAnthropic(api_key=api_key)
+        from openai import AsyncOpenAI
+        self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
     
     async def describe_diagram(
@@ -60,7 +60,7 @@ Be thorough and precise. This description will be used to generate exam question
             prompt += f"\n\nContext: {context}"
         
         try:
-            response = await self.client.messages.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=1024,
                 messages=[
@@ -68,23 +68,21 @@ Be thorough and precise. This description will be used to generate exam question
                         "role": "user",
                         "content": [
                             {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": f"image/{image_format}",
-                                    "data": image_base64,
-                                },
-                            },
-                            {
                                 "type": "text",
                                 "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/{image_format};base64,{image_base64}"
+                                }
                             }
                         ],
                     }
                 ],
             )
             
-            return response.content[0].text
+            return response.choices[0].message.content
             
         except Exception as e:
             raise RuntimeError(f"Failed to describe image: {str(e)}")

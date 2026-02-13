@@ -6,20 +6,26 @@ import {
   Binary, 
   Cpu, 
   Plus, 
-  Trash2, 
   ArrowRight, 
   Layers, 
   Database,
   Search,
   ShieldCheck,
   Zap,
-  Download
+  Target,
+  AlertCircle,
+  FileText
 } from 'lucide-react';
 
 type FileItem = {
   id: string;
   name: string;
   size: string;
+};
+
+type DistractorReasoning = {
+  option: string;
+  reason: string;
 };
 
 type Question = {
@@ -30,6 +36,36 @@ type Question = {
   answer: string;
   explanation: string;
   difficulty: string;
+  // V2 Multi-Agent metadata
+  topic: string;
+  cognitive_level: string;
+  quality_score: number;
+  distractor_reasoning: DistractorReasoning[];
+  source_references: string[];
+  quality_checks: Record<string, Record<string, boolean | string>>;
+};
+
+type FilesResponse = {
+  textbooks: Array<{ name: string; chunks: number }>;
+  exam_papers: Array<{ name: string; chunks: number }>;
+};
+
+type ErrorResponse = {
+  detail?: string;
+};
+
+type QuestionResponseData = {
+  question: string;
+  options: { A: string; B: string; C: string; D: string };
+  answer: string;
+  explanation: string;
+  difficulty: string;
+  topic?: string;
+  cognitive_level?: string;
+  quality_score?: number;
+  distractor_reasoning?: DistractorReasoning[];
+  source_references?: string[];
+  quality_checks?: Record<string, Record<string, boolean | string>>;
 };
 
 export default function Home() {
@@ -55,16 +91,16 @@ export default function Home() {
     try {
       const response = await fetch('http://localhost:8000/files');
       if (response.ok) {
-        const data = await response.json();
+        const data: FilesResponse = await response.json();
         
         // Map database response to frontend format
-        const textbookList = data.textbooks.map((file: any, idx: number) => ({
+        const textbookList = data.textbooks.map((file, idx: number) => ({
           id: `tb-${idx}`,
           name: file.name,
           size: `${file.chunks} chunks`
         }));
         
-        const examList = data.exam_papers.map((file: any, idx: number) => ({
+        const examList = data.exam_papers.map((file, idx: number) => ({
           id: `ex-${idx}`,
           name: file.name,
           size: `${file.chunks} chunks`
@@ -104,14 +140,15 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        const errorData: ErrorResponse = await response.json().catch(() => ({ detail: 'Upload failed' }));
         throw new Error(errorData.detail || 'Failed to upload textbook');
       }
 
       // Refresh file list from database
       await fetchFiles();
-    } catch (error: any) {
-      setError(error.message || 'Backend connection failed. Make sure the server is running on port 8000.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Backend connection failed. Make sure the server is running on port 8000.';
+      setError(message);
     } finally {
       setUploadingTextbook(false);
       e.target.value = '';
@@ -136,21 +173,22 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        const errorData: ErrorResponse = await response.json().catch(() => ({ detail: 'Upload failed' }));
         throw new Error(errorData.detail || 'Failed to upload exam paper');
       }
 
       // Refresh file list from database
       await fetchFiles();
-    } catch (error: any) {
-      setError(error.message || 'Backend connection failed. Make sure the server is running on port 8000.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Backend connection failed. Make sure the server is running on port 8000.';
+      setError(message);
     } finally {
       setUploadingExam(false);
       e.target.value = '';
     }
   };
 
-  // Generate questions
+  // Generate questions using V2 endpoint with multi-agent metadata
   const triggerInference = async () => {
     // Client-side validation
     if (!topic || topic.trim().length < 3) {
@@ -167,37 +205,46 @@ export default function Home() {
     setError(null);
     
     try {
-      const response = await fetch('http://localhost:8000/generate', {
+      // Use V2 endpoint for full multi-agent metadata
+      const response = await fetch('http://localhost:8000/generate/v2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic: topic.trim(), difficulty: complexity, count: quantity }),
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Generation failed' }));
+        const errorData: ErrorResponse = await response.json().catch(() => ({ detail: 'Generation failed' }));
         throw new Error(errorData.detail || 'Failed to generate questions');
       }
 
-      const data = await response.json();
+      const data: QuestionResponseData[] = await response.json();
       
       if (!data || data.length === 0) {
         throw new Error('No questions generated. Try uploading more textbooks or changing the topic.');
       }
       
-      // Map backend response to frontend format
-      const mappedQuestions: Question[] = data.map((q: any, idx: number) => ({
+      // Map V2 response to frontend format
+      const mappedQuestions: Question[] = data.map((q, idx: number) => ({
         id: idx + 1,
-        context: "SOURCE: Knowledge Base / RAG",
+        context: "SOURCE: Multi-Agent RAG",
         question: q.question,
         options: q.options,
         answer: q.answer,
         explanation: q.explanation,
-        difficulty: q.difficulty
+        difficulty: q.difficulty,
+        // V2 multi-agent metadata
+        topic: q.topic || topic.trim(),
+        cognitive_level: q.cognitive_level || 'application',
+        quality_score: q.quality_score || 7,
+        distractor_reasoning: q.distractor_reasoning || [],
+        source_references: q.source_references || [],
+        quality_checks: q.quality_checks || {}
       }));
       
       setQuestions(mappedQuestions);
-    } catch (error: any) {
-      setError(error.message || 'Backend connection failed. Make sure the server is running on port 8000.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Backend connection failed. Make sure the server is running on port 8000.';
+      setError(message);
     } finally {
       setIsProcessing(false);
     }
@@ -217,7 +264,7 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-6 text-[12px] uppercase tracking-widest text-[#6B7280]">
           <span className="flex items-center gap-1.5">
-            <ShieldCheck className="w-3.5 h-3.5" /> Core: GPT-4o-RAG
+            <ShieldCheck className="w-3.5 h-3.5" /> Core: Multi-Agent RAG
           </span>
           <span className="flex items-center gap-1.5">
             <Database className="w-3.5 h-3.5" /> Ready
@@ -434,17 +481,44 @@ export default function Home() {
   );
 }
 
-// Minimalist Question Component
+// Minimalist Question Component with V2 Multi-Agent Metadata
 function QuestionBlock({ data, number }: { data: Question; number: number }) {
   const [revealed, setRevealed] = useState(false);
 
+  // Get quality score color
+  const getQualityColor = (score: number) => {
+    if (score >= 8) return 'text-green-600 bg-green-50';
+    if (score >= 6) return 'text-amber-600 bg-amber-50';
+    return 'text-red-600 bg-red-50';
+  };
+
+  // Get cognitive level icon
+  const getCognitiveIcon = (level: string) => {
+    switch (level.toLowerCase()) {
+      case 'recall': return 'R';
+      case 'application': return 'A';
+      case 'analysis': return 'An';
+      case 'synthesis': return 'S';
+      default: return level[0].toUpperCase();
+    }
+  };
+
   return (
     <div className="bg-white border border-[#E5E7EB] hover:border-[#1A1A1A] transition-colors p-8 flex flex-col h-full">
-      <div className="flex justify-between items-start mb-6">
+      <div className="flex justify-between items-start mb-6 flex-wrap gap-2">
         <span className="text-[10px] font-black text-white bg-black px-2 py-0.5 tracking-tighter">
           Q_{number.toString().padStart(2, '0')}
         </span>
-        <span className="text-[10px] font-medium text-[#9CA3AF] tracking-widest uppercase">{data.context}</span>
+        <div className="flex items-center gap-2">
+          {/* Quality Score Badge */}
+          <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${getQualityColor(data.quality_score)}`}>
+            QLTY:{data.quality_score}/10
+          </span>
+          {/* Cognitive Level Badge */}
+          <span className="text-[9px] font-bold text-[#6B7280] border border-[#E5E7EB] px-2 py-0.5">
+            {getCognitiveIcon(data.cognitive_level)}/{data.cognitive_level.toUpperCase().slice(0, 3)}
+          </span>
+        </div>
       </div>
 
       <h4 className="text-[15px] font-medium leading-relaxed mb-8 flex-grow">
@@ -452,17 +526,27 @@ function QuestionBlock({ data, number }: { data: Question; number: number }) {
       </h4>
 
       <div className="space-y-3 mb-10">
-        {Object.entries(data.options).map(([key, value]) => (
-          <div 
-            key={key} 
-            className="flex items-center gap-4 text-sm group cursor-pointer"
-          >
-            <span className="w-5 h-5 flex items-center justify-center border border-[#E5E7EB] text-[10px] font-bold group-hover:bg-black group-hover:text-white transition-all">
-              {key}
-            </span>
-            <span className="text-[#6B7280] group-hover:text-black transition-colors">{value}</span>
-          </div>
-        ))}
+        {Object.entries(data.options).map(([key, value]) => {
+          const isCorrect = key === data.answer;
+          
+          return (
+            <div 
+              key={key} 
+              className="flex items-start gap-4 text-sm group cursor-pointer"
+            >
+              <span className={`w-5 h-5 flex items-center justify-center border text-[10px] font-bold transition-all flex-shrink-0 ${
+                isCorrect 
+                  ? 'border-green-500 bg-green-50 text-green-700' 
+                  : 'border-[#E5E7EB] group-hover:bg-black group-hover:text-white'
+              }`}>
+                {key}
+              </span>
+              <span className={`${isCorrect ? 'text-green-700' : 'text-[#6B7280] group-hover:text-black'} transition-colors`}>
+                {value}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       <div className="pt-6 border-t border-[#F3F4F6]">
@@ -475,13 +559,69 @@ function QuestionBlock({ data, number }: { data: Question; number: number }) {
         </button>
         
         {revealed && (
-          <div className="mt-4 p-4 bg-[#F9FAFB] border-l-2 border-black">
-            <p className="text-[12px] text-[#374151] leading-relaxed italic">
-              <span className="font-bold not-italic mr-2 text-black underline">
-                SOLUTION_{data.answer}
-              </span>
-              {data.explanation}
-            </p>
+          <div className="mt-4 space-y-4">
+            {/* Solution Header */}
+            <div className="p-4 bg-[#F9FAFB] border-l-2 border-black">
+              <p className="text-[12px] text-[#374151] leading-relaxed italic">
+                <span className="font-bold not-italic mr-2 text-black underline">
+                  SOLUTION_{data.answer}
+                </span>
+                {data.explanation}
+              </p>
+            </div>
+
+            {/* Multi-Agent Metadata Section */}
+            <div className="space-y-3">
+              {/* Distractor Reasoning */}
+              {data.distractor_reasoning.length > 0 && (
+                <div className="bg-white border border-[#E5E7EB] rounded p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertCircle className="w-3 h-3 text-[#9CA3AF]" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#6B7280]">
+                      Distractor Analysis
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {data.distractor_reasoning.filter(r => r.option !== data.answer).map((r) => (
+                      <div key={r.option} className="flex gap-2 text-[11px]">
+                        <span className="font-bold text-[#9CA3AF] w-4">{r.option}:</span>
+                        <span className="text-[#6B7280]">{r.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Source References */}
+              {data.source_references.length > 0 && (
+                <div className="bg-white border border-[#E5E7EB] rounded p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="w-3 h-3 text-[#9CA3AF]" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#6B7280]">
+                      Source References
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {data.source_references.slice(0, 3).map((ref, idx) => (
+                      <span key={idx} className="text-[10px] text-[#9CA3AF] bg-[#F9FAFB] px-2 py-0.5 rounded">
+                        {ref}
+                      </span>
+                    ))}
+                    {data.source_references.length > 3 && (
+                      <span className="text-[10px] text-[#9CA3AF] px-1">
+                        +{data.source_references.length - 3} more
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Topic Tag */}
+              <div className="flex items-center gap-2">
+                <Target className="w-3 h-3 text-[#9CA3AF]" />
+                <span className="text-[10px] text-[#9CA3AF]">Topic: <span className="text-[#374151]">{data.topic}</span></span>
+              </div>
+            </div>
           </div>
         )}
       </div>

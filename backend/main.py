@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from typing import List
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import asyncpg
@@ -8,12 +8,24 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 import tempfile
-from models.schemas import HealthResponse, IngestResponse, QuestionRequest, QuestionResponse
+
+from models.schemas import (
+    HealthResponse,
+    IngestResponse,
+    QuestionRequest,
+    QuestionResponse,
+    QuestionResponseV2,
+    GenerationMetadata,
+    FilesResponse,
+    StyleProfile,
+    AnalysisResult
+)
 from services.pdf_parser import PDFParser
 from services.embedder import EmbeddingService
 from services.vision import VisionService
-from services.rag_engine import RAGEngine
+from services.rag_engine import MultiAgentRAGEngine, RAGEngine
 from services.pdf_exporter import PDFExporter
+from services.style_analyzer import StyleAnalyzer
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +33,25 @@ load_dotenv()
 # Database connection pool
 db_pool = None
 
+
+import json
+
+# ... (imports)
+
+async def init_connection(conn):
+    """Initialize database connection with JSON codec"""
+    await conn.set_type_codec(
+        'jsonb',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog'
+    )
+    await conn.set_type_codec(
+        'json',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog'
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,8 +65,10 @@ async def lifespan(app: FastAPI):
             database_url,
             min_size=5,
             max_size=20,
-            command_timeout=60
+            command_timeout=60,
+            init=init_connection
         )
+
         print("✓ Database connection pool created")
     except Exception as e:
         print(f"✗ Failed to connect to database: {e}")
@@ -52,15 +85,15 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 app = FastAPI(
     title="GenCertQuiz API",
-    description="RAG-powered certification quiz generator",
-    version="0.1.0",
+    description="Multi-Agent RAG-powered certification quiz generator",
+    version="0.2.0",
     lifespan=lifespan
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to specific origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,7 +105,6 @@ async def health_check():
     """Health check endpoint"""
     db_status = "connected" if db_pool else "disconnected"
     
-    # Try to query the database
     if db_pool:
         try:
             async with db_pool.acquire() as conn:
@@ -87,19 +119,18 @@ async def health_check():
     )
 
 
-
-
 @app.get("/")
 async def root():
     """Root endpoint"""
     return {
         "message": "GenCertQuiz API",
-        "version": "0.1.0",
-        "docs": "/docs"
+        "version": "0.2.0",
+        "docs": "/docs",
+        "multi_agent": True
     }
 
 
-@app.get("/files")
+@app.get("/files", response_model=FilesResponse)
 async def list_files():
     """
     Get list of uploaded files grouped by source type.
@@ -115,7 +146,6 @@ async def list_files():
                 SELECT DISTINCT 
                     metadata->>'filename' as filename,
                     source_type,
-                    MIN(metadata->>'page_number') as first_page,
                     COUNT(*) as chunk_count
                 FROM knowledge_base
                 WHERE metadata->>'filename' IS NOT NULL
@@ -124,7 +154,6 @@ async def list_files():
                 """
             )
             
-            # Group by source type
             textbooks = []
             exam_papers = []
             
@@ -140,10 +169,10 @@ async def list_files():
                 elif row['source_type'] == 'exam_paper':
                     exam_papers.append(file_info)
             
-            return {
-                "textbooks": textbooks,
-                "exam_papers": exam_papers
-            }
+            return FilesResponse(
+                textbooks=textbooks,
+                exam_papers=exam_papers
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve files: {str(e)}")
 
@@ -158,13 +187,24 @@ async def ingest_pdf(
     
     Args:
         file: PDF file to ingest
-        source_type: Type of content ('textbook' or 'question')
+        source_type: Type of content ('textbook', 'question', 'exam_paper', or 'diagram')
+    
+    Note: For 'exam_paper' source type, a style profile will be automatically extracted
+    and cached for use in question generation.
     """
     if not db_pool:
         raise HTTPException(status_code=503, detail="Database not available")
     
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    # Validate source_type
+    valid_types = ['textbook', 'question', 'exam_paper', 'diagram']
+    if source_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source_type. Must be one of: {valid_types}"
+        )
     
     # Save uploaded file to temp location
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -188,7 +228,6 @@ async def ingest_pdf(
                     context=f"From {file.filename}"
                 )
                 
-                # Add image descriptions as additional chunks
                 for idx, desc in enumerate(descriptions):
                     parsed_data['chunks'].append({
                         'content': desc,
@@ -200,13 +239,9 @@ async def ingest_pdf(
                     })
                 images_processed = len(descriptions)
             except Exception as e:
-                # Silently skip image processing if it fails
-                # This is optional functionality
                 pass
         
-        
         # Step 3: Generate embeddings and store
-        # Inject document-level metadata (filename) into each chunk
         for chunk in parsed_data['chunks']:
             if 'metadata' not in chunk:
                 chunk['metadata'] = {}
@@ -218,41 +253,54 @@ async def ingest_pdf(
             source_type
         )
         
+        # Step 4: If exam_paper, extract and cache style profile
+        if source_type == 'exam_paper' and stats['chunks_stored'] > 0:
+            try:
+                style_analyzer = StyleAnalyzer(db_pool)
+                await style_analyzer.analyze_exam_paper(file.filename)
+            except Exception as e:
+                print(f"Style analysis skipped: {e}")
+        
         return IngestResponse(
             chunks_processed=stats['chunks_stored'],
             embeddings_created=stats['embeddings_generated'],
             images_processed=images_processed,
-            message=f"Successfully ingested {file.filename}"
+            message=f"Successfully ingested {file.filename} as {source_type}"
         )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
     finally:
-        # Clean up temp file
         Path(tmp_path).unlink(missing_ok=True)
 
 
 @app.post("/generate", response_model=List[QuestionResponse])
 async def generate_questions(request: QuestionRequest):
     """
-    Generate exam questions using RAG.
+    Generate exam questions using the Multi-Agent RAG pipeline.
+    
+    This endpoint uses the three-agent architecture:
+    1. Researcher: Extracts core facts from textbook
+    2. Psychometrician: Drafts questions with style synthesis
+    3. Critic: Quality gate with reflection and iteration
     
     Args:
         request: Question generation parameters
+        
+    Returns:
+        List of generated questions
     """
     if not db_pool:
         raise HTTPException(status_code=503, detail="Database not available")
     
     try:
-        # Initialize services
         embedder = EmbeddingService(db_pool)
-        rag_engine = RAGEngine(
+        rag_engine = MultiAgentRAGEngine(
             db_pool,
             embedder,
             similarity_threshold=float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
         )
         
-        # Generate questions
         questions = await rag_engine.generate_questions(
             topic=request.topic,
             count=request.count,
@@ -265,12 +313,96 @@ async def generate_questions(request: QuestionRequest):
                 detail=f"Could not generate questions for topic: {request.topic}"
             )
         
+        # Return in original format (strip multi-agent metadata)
         return [QuestionResponse(**q) for q in questions]
         
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+
+@app.post("/generate/v2", response_model=List[QuestionResponseV2])
+async def generate_questions_v2(request: QuestionRequest):
+    """
+    Generate exam questions with full multi-agent metadata.
+    
+    Returns enhanced response including:
+    - distractor_reasoning: Why each distractor was chosen
+    - cognitive_level: recall/application/analysis/synthesis
+    - quality_score: Critic agent's quality assessment
+    - quality_checks: Detailed quality check results
+    - source_references: Textbook sources used
+    
+    Args:
+        request: Question generation parameters
+        
+    Returns:
+        List of generated questions with full metadata
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        embedder = EmbeddingService(db_pool)
+        rag_engine = MultiAgentRAGEngine(
+            db_pool,
+            embedder,
+            similarity_threshold=float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
+        )
+        
+        questions = await rag_engine.generate_questions(
+            topic=request.topic,
+            count=request.count,
+            difficulty=request.difficulty
+        )
+        
+        if not questions:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not generate questions for topic: {request.topic}"
+            )
+        
+        return [QuestionResponseV2(**q) for q in questions]
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+
+@app.get("/analyze-style/{filename}", response_model=AnalysisResult)
+async def analyze_style_profile(filename: str):
+    """
+    Analyze an exam paper to extract its style profile.
+    
+    This endpoint analyzes the linguistic style, question patterns, and
+    distractor structures of an uploaded exam paper. The extracted style
+    profile is cached and used to guide future question generation.
+    
+    Args:
+        filename: The filename of the exam paper to analyze
+        
+    Returns:
+        Style profile with question stems, complexity, misconceptions, etc.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        style_analyzer = StyleAnalyzer(db_pool)
+        profile = await style_analyzer.analyze_exam_paper(filename, [filename])
+        
+        return AnalysisResult(
+            source_filename=filename,
+            chunk_count=profile.get('chunk_count', 0),
+            profile=StyleProfile(**profile)
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 @app.post("/export-pdf")
@@ -287,9 +419,8 @@ async def export_pdf(request: QuestionRequest):
     - PDF file download
     """
     try:
-        # Generate questions (reuse same logic as /generate)
         embedder = EmbeddingService(db_pool)
-        rag_engine = RAGEngine(db_pool, embedder)
+        rag_engine = MultiAgentRAGEngine(db_pool, embedder)
         
         questions = await rag_engine.generate_questions(
             topic=request.topic,
@@ -303,11 +434,9 @@ async def export_pdf(request: QuestionRequest):
                 detail=f"Could not generate questions for topic: {request.topic}"
             )
         
-        # Generate PDF
         exporter = PDFExporter()
         pdf_buffer = exporter.generate_pdf(questions, request.topic, request.difficulty)
         
-        # Return as downloadable file
         filename = f"{request.topic.replace(' ', '_')}_questions.pdf"
         return StreamingResponse(
             pdf_buffer,
@@ -319,7 +448,6 @@ async def export_pdf(request: QuestionRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
-
 
 
 if __name__ == "__main__":

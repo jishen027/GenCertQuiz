@@ -1,23 +1,320 @@
 """
-RAG engine with dual-path retrieval and question generation.
+Multi-Agent RAG Engine for High-Quality Question Generation.
+
+This module implements the complete multi-agent pipeline:
+1. Researcher: Extracts core facts from textbook content
+2. Psychometrician: Drafts questions matching exam style
+3. Critic: Quality gate with reflection and iteration
+
+The pipeline ensures questions are:
+- Factual accurate (checked by Researcher and Critic)
+- Style-consistent (guided by StyleAnalyzer and Psychometrician)
+- High-quality (critiqued and iterated by Critic)
 """
 import os
 from typing import List, Dict, Any, Optional
 import asyncpg
-import numpy as np
+
+from .hybrid_retriever import HybridRetriever
+from .style_analyzer import StyleAnalyzer
+from .agents import ResearcherAgent, PsychometricianAgent, CriticAgent
+from .agents.researcher import ResearchBrief
+from .agents.psychometrician import DraftedQuestion
+
+
+class MultiAgentRAGEngine:
+    """
+    Complete multi-agent RAG pipeline for high-quality question generation.
+    
+    Architecture:
+    - HybridRetriever: Combines vector + keyword search for context retrieval
+    - StyleAnalyzer: Extracts style profiles from past papers
+    - Researcher Agent: Extracts core facts from textbook content
+    - Psychometrician Agent: Drafts questions with style synthesis
+    - Critic Agent: Quality gate with reflection and iteration
+    """
+    
+    def __init__(
+        self,
+        db_pool: asyncpg.Pool,
+        embedding_service,
+        similarity_threshold: float = 0.85,
+        max_critic_iterations: int = 2,
+        min_critic_score: int = 7
+    ):
+        """
+        Initialize the multi-agent RAG engine.
+        
+        Args:
+            db_pool: Database connection pool
+            embedding_service: EmbeddingService instance
+            similarity_threshold: Cosine similarity threshold for deduplication
+            max_critic_iterations: Maximum revision loops with Critic
+            min_critic_score: Minimum score required for Critic approval
+        """
+        self.db_pool = db_pool
+        self.embedding_service = embedding_service
+        self.similarity_threshold = similarity_threshold
+        self.max_critic_iterations = max_critic_iterations
+        self.min_critic_score = min_critic_score
+        
+        # Initialize components
+        self.retriever = HybridRetriever(db_pool, embedding_service)
+        self.style_analyzer = StyleAnalyzer(db_pool)
+        
+        # Initialize agents
+        self.researcher = ResearcherAgent(self.retriever)
+        self.psychometrician = PsychometricianAgent()
+        self.critic = CriticAgent()
+    
+    async def is_duplicate(
+        self,
+        question_text: str,
+        source_type: str = 'question'
+    ) -> bool:
+        """
+        Check if a similar question already exists.
+        
+        Args:
+            question_text: Question to check
+            source_type: Type filter for comparison
+            
+        Returns:
+            True if duplicate found, False otherwise
+        """
+        # Generate embedding for new question
+        question_embedding = await self.embedding_service.generate_embedding(question_text)
+        
+        import json
+        embedding_str = json.dumps(question_embedding)
+        
+        async with self.db_pool.acquire() as conn:
+            result = await conn.fetchrow(
+                """
+                SELECT 1 - (embedding <=> $1::vector) as similarity
+                FROM knowledge_base
+                WHERE source_type = $2
+                ORDER BY embedding <=> $1::vector
+                LIMIT 1
+                """,
+                embedding_str,
+                source_type
+            )
+            
+            if result and result['similarity'] >= self.similarity_threshold:
+                return True
+            
+            return False
+    
+    async def generate_questions(
+        self,
+        topic: str,
+        count: int = 5,
+        difficulty: str = "medium",
+        max_total_attempts: int = 15
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate multiple high-quality questions on a topic using the multi-agent pipeline.
+        
+        This is the main entry point for question generation.
+        
+        Args:
+            topic: Question topic
+            count: Number of questions to generate
+            difficulty: Question difficulty (easy, medium, hard)
+            max_total_attempts: Max total attempts (including retries)
+            
+        Returns:
+            List of generated questions with full metadata
+        """
+        print(f"\n{'='*60}")
+        print(f"GENERATING {count} {difficulty.upper()} QUESTIONS ON: {topic}")
+        print(f"{'='*60}")
+        
+        # Phase 1: Knowledge & Style Ingestion
+        print("\n📚 Phase 1: Knowledge & Style Ingestion")
+        print("-" * 40)
+        
+        # Researcher: Get facts from textbook
+        print(f"  • Researcher: Extracting facts for '{topic}'...")
+        research_brief = await self.researcher.research(topic, difficulty)
+        print(f"    ✓ Found {len(research_brief.core_facts)} core facts")
+        print(f"    ✓ Found {len(research_brief.key_definitions)} definitions")
+        print(f"    ✓ Found {len(research_brief.formulas_and_rules)} formulas/rules")
+        
+        # Style Analyzer: Get style profile from past papers
+        print(f"  • Style Analyzer: Extracting style profile...")
+        style_profile = await self.style_analyzer.get_style_profile(topic)
+        if style_profile:
+            print(f"    ✓ Style profile extracted")
+            print(f"      - Question stems: {len(style_profile.get('question_stems', []))}")
+            print(f"      - Complexity: {style_profile.get('complexity', 'unknown')}")
+            print(f"      - Common misconceptions: {len(style_profile.get('common_misconceptions', []))}")
+        else:
+            print(f"    ⚠ No style profile found (no exam papers ingested)")
+        
+        # Style Examples: Get sample questions
+        print(f"  • Retriever: Fetching style examples...")
+        style_examples = await self.retriever.fetch_style_examples(topic, limit=3)
+        print(f"    ✓ Found {len(style_examples)} style examples")
+        
+        # Phase 2: Multi-Agent Generation Loop
+        print(f"\n🤖 Phase 2: Multi-Agent Generation Loop")
+        print("-" * 40)
+        
+        questions = []
+        attempts = 0
+        
+        while len(questions) < count and attempts < max_total_attempts:
+            attempts += 1
+            print(f"\n  Question {len(questions) + 1}/{count} (attempt {attempts})...")
+            
+            try:
+                # Agent 2: Psychometrician drafts the question
+                print(f"    • Psychometrician: Drafting question...")
+                draft = await self.psychometrician.draft_question(
+                    research_brief=research_brief,
+                    style_profile=style_profile,
+                    style_examples=style_examples,
+                    difficulty=difficulty
+                )
+                print(f"      ✓ Draft created")
+                print(f"        - Cognitive level: {draft.cognitive_level}")
+                print(f"        - Distractor reasoning: {len(draft.distractor_reasoning)} distractors")
+                
+                # Agent 3: Critic reviews and iterates
+                print(f"    • Critic: Reviewing question...")
+                review = await self.critic.review(
+                    question=draft,
+                    research_brief=research_brief,
+                    min_score=self.min_critic_score
+                )
+                
+                # Revision loop
+                current_draft = draft
+                for iteration in range(self.max_critic_iterations):
+                    if review.approved:
+                        break
+                    
+                    print(f"      ⚠ Not approved (score: {review.score}/10)")
+                    print(f"      • Psychometrician: Revising based on feedback...")
+                    
+                    current_draft = await self.psychometrician.revise_question(
+                        current_draft=current_draft,
+                        feedback=review.suggestions,
+                        research_brief=research_brief
+                    )
+                    
+                    # Re-review
+                    review = await self.critic.review(
+                        question=current_draft,
+                        research_brief=research_brief,
+                        min_score=self.min_critic_score
+                    )
+                
+                if review.approved:
+                    print(f"      ✓ Approved (score: {review.score}/10)")
+                else:
+                    print(f"      ⚠ Not approved after {self.max_critic_iterations} revisions")
+                    continue
+                
+                # Check for duplicates
+                if await self.is_duplicate(current_draft.question):
+                    print(f"    ⚠ Skipped (duplicate)")
+                    continue
+                
+                # Convert to response format
+                question_dict = self._draft_to_response(current_draft, review)
+                questions.append(question_dict)
+                print(f"    ✓ Question added")
+                
+            except Exception as e:
+                print(f"    ✗ Failed: {str(e)}")
+                continue
+        
+        # Summary
+        print(f"\n{'='*60}")
+        print(f"GENERATION COMPLETE")
+        print(f"{'='*60}")
+        print(f"  Requested: {count}")
+        print(f"  Generated: {len(questions)}")
+        print(f"  Total attempts: {attempts}")
+        print(f"  Success rate: {len(questions)/attempts*100:.1f}%")
+        
+        if not questions:
+            print(f"\n⚠ WARNING: No questions generated!")
+            print(f"   Tips:")
+            print(f"   - Ensure textbook content is ingested for topic: {topic}")
+            print(f"   - Ingest exam papers for better style matching")
+            print(f"   - Try a broader topic or lower difficulty")
+        
+        return questions
+    
+    def _draft_to_response(
+        self,
+        draft: DraftedQuestion,
+        review: "CritiqueReview"  # Forward reference
+    ) -> Dict[str, Any]:
+        """
+        Convert a DraftedQuestion to the response format.
+        
+        Args:
+            draft: The drafted question
+            review: The critic review
+            
+        Returns:
+            Question dict in response format
+        """
+        return {
+            "question": draft.question,
+            "options": draft.options,
+            "answer": draft.answer,
+            "explanation": draft.explanation,
+            "difficulty": draft.difficulty,
+            "distractor_reasoning": draft.distractor_reasoning,
+            "topic": draft.topic,
+            "cognitive_level": draft.cognitive_level,
+            "quality_score": review.score,
+            "quality_checks": review.checks,
+            "source_references": []  # Could be populated from research brief
+        }
+    
+    async def generate_questions_legacy(
+        self,
+        topic: str,
+        count: int = 5,
+        difficulty: str = "medium"
+    ) -> List[Dict[str, Any]]:
+        """
+        Legacy method for backward compatibility.
+        
+        Falls back to single-agent generation if multi-agent fails.
+        """
+        try:
+            return await self.generate_questions(topic, count, difficulty)
+        except Exception as e:
+            print(f"Multi-agent pipeline failed: {e}")
+            print("Falling back to legacy generation...")
+            
+            # Fallback to simple generation (imported from original)
+            from .rag_engine_original import generate_questions_simple
+            return await generate_questions_simple(
+                topic=topic,
+                count=count,
+                difficulty=difficulty,
+                retriever=self.retriever,
+                embedding_service=self.embedding_service
+            )
+
+
+# Keep the original DualPathRetriever and QuestionGenerator for backward compatibility
+from .embedder import EmbeddingService
 
 
 class DualPathRetriever:
     """Retrieve context using separate paths for facts and question style"""
     
     def __init__(self, db_pool: asyncpg.Pool, embedding_service):
-        """
-        Initialize the dual-path retriever.
-        
-        Args:
-            db_pool: Database connection pool
-            embedding_service: EmbeddingService instance for query embedding
-        """
         self.db_pool = db_pool
         self.embedding_service = embedding_service
     
@@ -27,21 +324,8 @@ class DualPathRetriever:
         limit: int = 10,
         similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
-        """
-        Retrieve factual textbook content relevant to the query.
-        
-        Args:
-            query: Search query
-            limit: Maximum number of results
-            similarity_threshold: Minimum cosine similarity score
-            
-        Returns:
-            List of relevant textbook chunks
-        """
-        # Generate embedding for query
+        """Retrieve factual textbook content relevant to the query."""
         query_embedding = await self.embedding_service.generate_embedding(query)
-        
-        # Convert to JSON string for PostgreSQL
         import json
         embedding_str = json.dumps(query_embedding)
         
@@ -66,7 +350,7 @@ class DualPathRetriever:
             return [
                 {
                     'content': row['content'],
-                    'metadata': row['metadata'],
+                    'metadata': dict(row['metadata']),
                     'similarity': float(row['similarity'])
                 }
                 for row in rows
@@ -78,22 +362,8 @@ class DualPathRetriever:
         similarity_threshold: float = 0.7,
         limit: int = 3
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch sample question styles from exam papers and existing questions.
-        Prioritizes exam_paper source type for style reference.
-        
-        Args:
-            query: Search query (topic)
-            similarity_threshold: Minimum similarity score
-            limit: Max results to return
-            
-        Returns:
-            List of style example dicts with content, metadata, similarity
-        """
-        # Generate embedding for query
+        """Fetch sample question styles from exam papers."""
         query_embedding = await self.embedding_service.generate_embedding(query)
-        
-        # Convert to JSON string for PostgreSQL
         import json
         embedding_str = json.dumps(query_embedding)
         
@@ -124,7 +394,7 @@ class DualPathRetriever:
             return [
                 {
                     'content': row['content'],
-                    'metadata': row['metadata'],
+                    'metadata': dict(row['metadata']),
                     'similarity': float(row['similarity']),
                     'source_type': row['source_type']
                 }
@@ -140,13 +410,6 @@ class QuestionGenerator:
         api_key: Optional[str] = None,
         model: str = "gpt-4o"
     ):
-        """
-        Initialize the question generator.
-        
-        Args:
-            api_key: OpenAI API key (defaults to env var)
-            model: OpenAI model to use (gpt-4o, gpt-4-turbo, etc.)
-        """
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OpenAI API key not provided")
@@ -162,19 +425,7 @@ class QuestionGenerator:
         style_examples: Optional[List[str]] = None,
         difficulty: str = "medium"
     ) -> Dict[str, Any]:
-        """
-        Generate a single exam question.
-        
-        Args:
-            topic: Question topic
-            facts: Factual content chunks from textbook
-            style_examples: Optional sample questions for style reference
-            difficulty: Question difficulty (easy, medium, hard)
-            
-        Returns:
-            Dict with question, options, answer, explanation, difficulty
-        """
-        # Build context
+        """Generate a single exam question."""
         facts_context = "\n\n".join([f"FACT {i+1}:\n{fact}" for i, fact in enumerate(facts)])
         
         style_context = ""
@@ -182,7 +433,6 @@ class QuestionGenerator:
             style_context = "\n\nEXAMPLE QUESTIONS FOR STYLE REFERENCE:\n" + \
                            "\n\n".join([f"EXAMPLE {i+1}:\n{ex}" for i, ex in enumerate(style_examples)])
         
-        # Build prompt
         system_prompt = f"""You are an expert certification exam question writer. Generate high-quality, exam-style multiple-choice questions based on the provided facts.
 
 REQUIREMENTS:
@@ -225,7 +475,6 @@ Return ONLY valid JSON in this exact format:
                 response_format={"type": "json_object"}
             )
             
-            # Extract JSON from response
             import json
             response_text = response.choices[0].message.content
             question_data = json.loads(response_text)
@@ -235,8 +484,9 @@ Return ONLY valid JSON in this exact format:
             raise RuntimeError(f"Failed to generate question: {str(e)}")
 
 
+# Legacy RAGEngine for backward compatibility
 class RAGEngine:
-    """Complete RAG pipeline with deduplication"""
+    """Legacy RAG engine - use MultiAgentRAGEngine instead"""
     
     def __init__(
         self,
@@ -244,44 +494,18 @@ class RAGEngine:
         embedding_service,
         similarity_threshold: float = 0.85
     ):
-        """
-        Initialize the RAG engine.
-        
-        Args:
-            db_pool: Database connection pool
-            embedding_service: EmbeddingService instance
-            similarity_threshold: Cosine similarity threshold for deduplication
-        """
         self.retriever = DualPathRetriever(db_pool, embedding_service)
         self.generator = QuestionGenerator()
         self.embedding_service = embedding_service
         self.similarity_threshold = similarity_threshold
         self.db_pool = db_pool
     
-    async def is_duplicate(
-        self,
-        question_text: str,
-        source_type: str = 'question'
-    ) -> bool:
-        """
-        Check if a similar question already exists.
-        
-        Args:
-            question_text: Question to check
-            source_type: Type filter for comparison
-            
-        Returns:
-            True if duplicate found, False otherwise
-        """
-        # Generate embedding for new question
+    async def is_duplicate(self, question_text: str, source_type: str = 'question') -> bool:
         question_embedding = await self.embedding_service.generate_embedding(question_text)
-        
-        # Convert to JSON string for PostgreSQL
         import json
         embedding_str = json.dumps(question_embedding)
         
         async with self.db_pool.acquire() as conn:
-            # Find most similar existing question
             result = await conn.fetchrow(
                 """
                 SELECT 1 - (embedding <=> $1::vector) as similarity
@@ -296,7 +520,6 @@ class RAGEngine:
             
             if result and result['similarity'] >= self.similarity_threshold:
                 return True
-            
             return False
     
     async def generate_questions(
@@ -306,26 +529,12 @@ class RAGEngine:
         difficulty: str = "medium",
         max_retries: int = 3
     ) -> List[Dict[str, Any]]:
-        """
-        Generate multiple unique questions on a topic.
-        
-        Args:
-            topic: Question topic
-            count: Number of questions to generate
-            difficulty: Question difficulty
-            max_retries: Max retries per question if duplicate
-            
-        Returns:
-            List of generated questions
-        """
-        # Retrieve context
         facts = await self.retriever.fetch_facts(topic, limit=10)
         style_examples = await self.retriever.fetch_style(topic, limit=3)
         
         if not facts:
             raise ValueError(f"No factual content found for topic: {topic}")
         
-        # Extract text content
         fact_texts = [f['content'] for f in facts]
         style_texts = [s['content'] for s in style_examples] if style_examples else None
         
@@ -337,15 +546,10 @@ class RAGEngine:
             attempts += 1
             
             try:
-                # Generate question
                 question = await self.generator.generate_question(
-                    topic,
-                    fact_texts,
-                    style_texts,
-                    difficulty
+                    topic, fact_texts, style_texts, difficulty
                 )
                 
-                # Check for duplicates
                 is_dup = await self.is_duplicate(question['question'])
                 
                 if not is_dup:
@@ -363,18 +567,24 @@ class RAGEngine:
 # CLI test
 if __name__ == "__main__":
     print("=" * 60)
-    print("RAG ENGINE - ARCHITECTURE OVERVIEW")
+    print("MULTI-AGENT RAG ENGINE - ARCHITECTURE OVERVIEW")
     print("=" * 60)
-    print("\n📚 Dual-Path Retrieval:")
-    print("  • fetch_facts() → Textbook + diagram content")
-    print("  • fetch_style() → Sample question patterns")
-    print("\n🤖 Question Generation:")
-    print("  • OpenAI GPT-4 with JSON mode")
-    print("  • JSON-structured output")
-    print("  • Configurable difficulty levels")
-    print("\n🔍 Semantic Deduplication:")
-    print("  • Cosine similarity threshold: 0.85")
-    print("  • Prevents duplicate questions")
+    print("\n🤖 THREE-AGENT ARCHITECTURE:")
+    print("  1. RESEARCHER → Extracts core facts from textbook")
+    print("  2. PSYCHOMETRICIAN → Drafts questions with style synthesis")
+    print("  3. CRITIC → Quality gate with reflection & iteration")
+    print("\n🔍 HYBRID RETRIEVAL:")
+    print("  • Vector Search (conceptual similarity)")
+    print("  • Keyword Search (exact term matching)")
+    print("  • RRF merging for optimal results")
+    print("\n📊 STYLE ANALYSIS:")
+    print("  • Extracts question stems, sentence length")
+    print("  • Identifies distractor patterns")
+    print("  • Caches profiles for reuse")
+    print("\n✅ QUALITY GUARANTEES:")
+    print("  • Factual accuracy (checked by Researcher + Critic)")
+    print("  • Style consistency (guided by StyleAnalyzer)")
+    print("  • Iterative refinement (Critic → Psychometrician loop)")
     print("\n" + "=" * 60)
     print("To test: Use POST /generate endpoint (after ingesting PDFs)")
     print("=" * 60)

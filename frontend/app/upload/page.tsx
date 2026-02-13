@@ -1,11 +1,22 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
+
+type UploadResult = {
+  chunks_processed: number;
+  embeddings_created: number;
+  images_processed: number;
+  message: string;
+};
+
+type SourceType = 'textbook' | 'exam_paper';
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
+  const [sourceType, setSourceType] = useState<SourceType>('textbook');
   const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<UploadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -32,7 +43,7 @@ export default function UploadPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('source_type', 'textbook');
+      formData.append('source_type', sourceType);
 
       const response = await fetch('http://localhost:8000/ingest', {
         method: 'POST',
@@ -44,11 +55,12 @@ export default function UploadPage() {
         throw new Error(errorData.detail || 'Upload failed');
       }
 
-      const data = await response.json();
+      const data: UploadResult = await response.json();
       setResult(data);
       setFile(null);
-    } catch (err: any) {
-      setError(err.message || 'Failed to upload PDF. Make sure the backend is running.');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to upload PDF. Make sure the backend is running.';
+      setError(message);
     } finally {
       setUploading(false);
     }
@@ -59,7 +71,7 @@ export default function UploadPage() {
       <div className="max-w-3xl mx-auto">
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-            Upload PDF Textbook
+            Upload Document
           </h1>
           <p className="text-center text-gray-600">
             Upload PDF files to build your knowledge base for question generation
@@ -68,6 +80,34 @@ export default function UploadPage() {
 
         <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
           <div className="space-y-6">
+            {/* Source Type Selector */}
+            <div className="flex gap-4">
+              <button
+                type="button"
+                onClick={() => setSourceType('textbook')}
+                className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all ${
+                  sourceType === 'textbook'
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                    : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                <div className="font-semibold">Textbook</div>
+                <div className="text-xs mt-1">Knowledge base content</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSourceType('exam_paper')}
+                className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all ${
+                  sourceType === 'exam_paper'
+                    ? 'border-purple-500 bg-purple-50 text-purple-700'
+                    : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                <div className="font-semibold">Exam Paper</div>
+                <div className="text-xs mt-1">Style profile extraction</div>
+              </button>
+            </div>
+
             {/* Upload Area */}
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-indigo-400 transition-colors">
               <input
@@ -105,7 +145,7 @@ export default function UploadPage() {
 
             {/* Selected File */}
             {file && (
-              <div className="flex items-center justify-between bg-indigo-50 rounded-lg p-4">
+              <div className="flex items-center justify-between bg-gray-50 rounded-lg p-4">
                 <div className="flex items-center gap-3">
                   <svg
                     className="w-8 h-8 text-red-600"
@@ -123,7 +163,7 @@ export default function UploadPage() {
                 </div>
                 <button
                   onClick={() => setFile(null)}
-                  className="text-red-600 hover:text-red-700"
+                  className="text-gray-400 hover:text-red-600 transition-colors"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -136,7 +176,11 @@ export default function UploadPage() {
             <button
               onClick={handleUpload}
               disabled={!file || uploading}
-              className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold py-3 px-6 rounded-lg hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl"
+              className={`w-full text-white font-semibold py-3 px-6 rounded-lg transition-all shadow-lg hover:shadow-xl ${
+                sourceType === 'textbook'
+                  ? 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700'
+                  : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
               {uploading ? (
                 <span className="flex items-center justify-center gap-2">
@@ -147,7 +191,7 @@ export default function UploadPage() {
                   Processing PDF...
                 </span>
               ) : (
-                'Upload & Process'
+                `Upload as ${sourceType === 'textbook' ? 'Textbook' : 'Exam Paper'}`
               )}
             </button>
 
@@ -178,7 +222,9 @@ export default function UploadPage() {
                       <p>✓ Images processed: <span className="font-semibold">{result.images_processed}</span></p>
                     </div>
                     <p className="text-sm text-green-600 mt-3">
-                      You can now generate questions based on this content!
+                      {sourceType === 'exam_paper' 
+                        ? 'Style profile extracted! Questions will now match this exam\'s pattern.'
+                        : 'You can now generate questions based on this content!'}
                     </p>
                   </div>
                 </div>
@@ -189,7 +235,7 @@ export default function UploadPage() {
 
         {/* Navigation */}
         <div className="mt-6 text-center">
-          <a
+          <Link
             href="/"
             className="inline-flex items-center gap-2 text-indigo-600 hover:text-indigo-700 font-medium"
           >
@@ -197,7 +243,7 @@ export default function UploadPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
             Back to Question Generator
-          </a>
+          </Link>
         </div>
       </div>
     </div>
