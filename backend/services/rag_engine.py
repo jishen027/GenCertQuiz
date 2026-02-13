@@ -75,19 +75,20 @@ class DualPathRetriever:
     async def fetch_style(
         self,
         query: str,
-        limit: int = 5,
-        similarity_threshold: float = 0.7
+        similarity_threshold: float = 0.7,
+        limit: int = 3
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve sample question examples for style reference.
+        Fetch sample question styles from exam papers and existing questions.
+        Prioritizes exam_paper source type for style reference.
         
         Args:
-            query: Search query
-            limit: Maximum number of results
-            similarity_threshold: Minimum cosine similarity score
+            query: Search query (topic)
+            similarity_threshold: Minimum similarity score
+            limit: Max results to return
             
         Returns:
-            List of relevant sample questions
+            List of style example dicts with content, metadata, similarity
         """
         # Generate embedding for query
         query_embedding = await self.embedding_service.generate_embedding(query)
@@ -102,11 +103,17 @@ class DualPathRetriever:
                 SELECT 
                     content,
                     metadata,
+                    source_type,
                     1 - (embedding <=> $1::vector) as similarity
                 FROM knowledge_base
-                WHERE source_type = 'question'
+                WHERE source_type IN ('exam_paper', 'question')
                     AND 1 - (embedding <=> $1::vector) > $2
-                ORDER BY embedding <=> $1::vector
+                ORDER BY 
+                    CASE 
+                        WHEN source_type = 'exam_paper' THEN 0
+                        ELSE 1
+                    END,
+                    embedding <=> $1::vector
                 LIMIT $3
                 """,
                 embedding_str,
@@ -118,7 +125,8 @@ class DualPathRetriever:
                 {
                     'content': row['content'],
                     'metadata': row['metadata'],
-                    'similarity': float(row['similarity'])
+                    'similarity': float(row['similarity']),
+                    'source_type': row['source_type']
                 }
                 for row in rows
             ]

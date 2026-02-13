@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from typing import List
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import asyncpg
@@ -87,6 +87,8 @@ async def health_check():
     )
 
 
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -97,10 +99,59 @@ async def root():
     }
 
 
+@app.get("/files")
+async def list_files():
+    """
+    Get list of uploaded files grouped by source type.
+    Returns metadata about uploaded PDFs stored in the database.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT 
+                    metadata->>'filename' as filename,
+                    source_type,
+                    MIN(metadata->>'page_number') as first_page,
+                    COUNT(*) as chunk_count
+                FROM knowledge_base
+                WHERE metadata->>'filename' IS NOT NULL
+                GROUP BY metadata->>'filename', source_type
+                ORDER BY source_type, filename
+                """
+            )
+            
+            # Group by source type
+            textbooks = []
+            exam_papers = []
+            
+            for row in rows:
+                file_info = {
+                    "name": row['filename'],
+                    "source_type": row['source_type'],
+                    "chunks": row['chunk_count']
+                }
+                
+                if row['source_type'] == 'textbook':
+                    textbooks.append(file_info)
+                elif row['source_type'] == 'exam_paper':
+                    exam_papers.append(file_info)
+            
+            return {
+                "textbooks": textbooks,
+                "exam_papers": exam_papers
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve files: {str(e)}")
+
+
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest_pdf(
     file: UploadFile = File(...),
-    source_type: str = "textbook"
+    source_type: str = Form("textbook")
 ):
     """
     Ingest a PDF file: parse, extract images, generate embeddings, and store.
@@ -110,7 +161,7 @@ async def ingest_pdf(
         source_type: Type of content ('textbook' or 'question')
     """
     if not db_pool:
-        raise HTTPException(status_code=503, message="Database not available")
+        raise HTTPException(status_code=503, detail="Database not available")
     
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
@@ -126,9 +177,10 @@ async def ingest_pdf(
         parser = PDFParser()
         parsed_data = await parser.parse_pdf(tmp_path)
         
-        # Step 2: Process images with vision service (if any)
+        # Step 2: Process images with vision service (optional)
         images_processed = 0
-        if parsed_data['images'] and os.getenv("ANTHROPIC_API_KEY"):
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if parsed_data['images'] and anthropic_key and anthropic_key.startswith('sk-ant-'):
             try:
                 vision_service = VisionService()
                 descriptions = await vision_service.batch_describe(
@@ -148,9 +200,18 @@ async def ingest_pdf(
                     })
                 images_processed = len(descriptions)
             except Exception as e:
-                print(f"Warning: Failed to process images: {e}")
+                # Silently skip image processing if it fails
+                # This is optional functionality
+                pass
+        
         
         # Step 3: Generate embeddings and store
+        # Inject document-level metadata (filename) into each chunk
+        for chunk in parsed_data['chunks']:
+            if 'metadata' not in chunk:
+                chunk['metadata'] = {}
+            chunk['metadata']['filename'] = file.filename
+            
         embedder = EmbeddingService(db_pool)
         stats = await embedder.process_and_store(
             parsed_data['chunks'],
