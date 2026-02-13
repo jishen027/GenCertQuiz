@@ -6,8 +6,9 @@ A RAG-powered certification quiz generator that ingests textbook PDFs and genera
 
 - 📚 **Multi-modal PDF Ingestion** - Extract text, images, and diagrams using Docling
 - 🧠 **Dual-Path RAG** - Separate retrieval for factual content and question style
-- 🎯 **Smart Question Generation** - Uses Claude AI with semantic deduplication
-- 🗺️ **Interactive Mind Map** - Visual topic exploration interface
+- 🎯 **Smart Question Generation** - Uses **OpenAI GPT-4o** for high-quality question generation
+- 👁️ **Vision Analysis** - Uses **Claude 3.5 Sonnet** for understanding diagrams and charts
+- ⚡ **Optimized Search** - Semantic deduplication and pgvector-based retrieval
 - 📝 **Exam Interface** - Full-featured quiz-taking experience
 - 📤 **PDF Export** - Download generated question sets
 
@@ -19,7 +20,7 @@ A RAG-powered certification quiz generator that ingests textbook PDFs and genera
 - Python 3.11+
 - Node.js 18+ (for frontend)
 - OpenAI API key
-- Anthropic API key (optional)
+- Anthropic API key (optional, for vision features)
 
 ### 1. Start Database
 
@@ -32,7 +33,7 @@ docker-compose up -d
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env and add your API keys
+# Edit .env and add your API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY)
 ```
 
 ### 3. Install Backend Dependencies
@@ -49,7 +50,17 @@ python main.py
 
 Backend will be available at http://localhost:8000
 
-### 5. Verify Setup
+### 5. Run Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend will be available at http://localhost:3000
+
+### 6. Verify Setup
 
 ```bash
 curl http://localhost:8000/health
@@ -70,29 +81,41 @@ GenCertQuiz/
 ├── docker-compose.yml          # PostgreSQL + pgvector
 ├── migrations/                 # Database migrations
 ├── backend/                    # FastAPI backend
-│   ├── main.py                # Application entry point
-│   ├── models/                # Pydantic schemas
-│   └── services/              # Business logic
-└── frontend/                   # Next.js frontend (coming soon)
+│   ├── main.py                 # Application entry point
+│   ├── models/                 # Pydantic schemas
+│   └── services/               # Business logic (RAG, Vision, Embedding)
+└── frontend/                   # Next.js frontend
 ```
 
 ## Development Status
 
-✅ Sprint 1: Foundation (COMPLETE)
-- Docker Compose setup
-- Database schema with pgvector
+✅ **Foundation** (COMPLETE)
+- Docker Compose setup & Database schema with pgvector
 - FastAPI skeleton with health check
 
-⏳ Sprint 2: Ingestion Pipeline (PENDING)
-⏳ Sprint 3: RAG Core (PENDING)
-⏳ Sprint 4: Frontend (PENDING)
-⏳ Sprint 5: Production Ready (PENDING)
+✅ **Ingestion Pipeline** (COMPLETE)
+- PDF Parsing & Text Chunking
+- OpenAI Embedding Generation
+- Vector Storage
+
+✅ **RAG Core** (COMPLETE)
+- Dual-path retrieval (Facts + Style)
+- GPT-4o Question Generation
+- Semantic Deduplication
+
+✅ **Frontend** (COMPLETE)
+- Next.js Application
+- File Upload & Management
+- Quiz Interface
+
+⏳ **Production Ready** (IN PROGRESS)
+- Comprehensive Testing
+- CI/CD Pipelines
+- Deployment Optimization
 
 ## API Documentation
 
 Once the backend is running, visit:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
 
 ## License
 
