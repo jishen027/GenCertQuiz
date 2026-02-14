@@ -177,6 +177,40 @@ async def list_files():
         raise HTTPException(status_code=500, detail=f"Failed to retrieve files: {str(e)}")
 
 
+@app.delete("/files/{filename}")
+async def delete_file(filename: str):
+    """
+    Delete a file and all its associated data (chunks, embeddings, style profiles).
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Delete from knowledge_base
+            # CAST to text to ensure type matching if needed, though usually auto-cast works
+            kb_result = await conn.execute(
+                "DELETE FROM knowledge_base WHERE metadata->>'filename' = $1",
+                filename
+            )
+            
+            # Delete from style_profiles
+            sp_result = await conn.execute(
+                "DELETE FROM style_profiles WHERE source_filename = $1",
+                filename
+            )
+            
+            return {
+                "message": f"Deleted {filename}",
+                "details": {
+                    "knowledge_base_chunks": kb_result.replace("DELETE ", ""),
+                    "style_profiles": sp_result.replace("DELETE ", "")
+                }
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
+
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest_pdf(
     file: UploadFile = File(...),

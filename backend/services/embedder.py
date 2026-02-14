@@ -150,7 +150,7 @@ class EmbeddingService:
                 content,
                 embedding_str,
                 source_type,
-                metadata_json
+                metadata or {}
             )
             return str(row['id'])
     

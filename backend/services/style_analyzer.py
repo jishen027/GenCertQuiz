@@ -93,6 +93,23 @@ class StyleAnalyzer:
         exam_papers = await self._find_relevant_exam_papers(topic)
         
         if not exam_papers:
+            # Fallback: Try to get ANY style profile if topic-specific search failed
+            # This ensures we always have *some* style guidance if exam papers exist
+            print(f"    ⚠ No relevant exam papers found for '{topic}'. Using fallback.")
+            async with self.db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT profile 
+                    FROM style_profiles 
+                    ORDER BY updated_at DESC 
+                    LIMIT 1
+                    """
+                )
+                if row:
+                    profile_data = row['profile']
+                    if isinstance(profile_data, str):
+                        return json.loads(profile_data)
+                    return dict(profile_data)
             return None
         
         # Get the most relevant exam paper
@@ -238,8 +255,6 @@ Be specific and thorough in your analysis."""
                 filename
             )
             
-            profile_json = json.dumps(profile)
-            
             if existing:
                 # Update existing
                 await conn.execute(
@@ -251,7 +266,7 @@ Be specific and thorough in your analysis."""
                     WHERE source_filename = $3
                     """,
                     topic_keywords,
-                    profile_json,
+                    profile,  # Pass dict directly
                     filename
                 )
             else:
@@ -263,7 +278,7 @@ Be specific and thorough in your analysis."""
                     """,
                     filename,
                     topic_keywords,
-                    profile_json
+                    profile   # Pass dict directly
                 )
     
     async def _get_cached_profile(

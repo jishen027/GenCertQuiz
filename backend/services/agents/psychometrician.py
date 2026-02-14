@@ -91,55 +91,36 @@ TOPIC: {research_brief.topic}
 
 {style_context}
 
-Return a JSON object with this structure:
+Returns the result as a JSON object (NOT the schema definition, but the actual data) with this structure:
 {{
-    "question": "The question text - use phrasing similar to past papers",
-    "options": {{
-        "A": "First option",
-        "B": "Second option",
-        "C": "Third option",
-        "D": "Fourth option"
-    }},
-    "answer": "A|B|C|D",
-    "explanation": "Detailed 3-5 sentence explanation. Reference specific facts from the research content. Explain why the answer is correct and why each distractor is wrong.",
+    "question": "Question text...",
+    "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
+    "answer": "A",
+    "explanation": "...",
     "difficulty": "{difficulty}",
     "distractor_reasoning": [
-        {{
-            "option": "A",
-            "reason": "Why this distractor was chosen - what misconception it tests"
-        }},
-        {{
-            "option": "B",
-            "reason": "Why this distractor was chosen"
-        }},
-        {{
-            "option": "C",
-            "reason": "Why this distractor was chosen"
-        }},
-        {{
-            "option": "D",
-            "reason": "Why this distractor was chosen"
-        }}
+        {{"option": "A", "reason": "..."}},
+        {{"option": "B", "reason": "..."}},
+        {{"option": "C", "reason": "..."}},
+        {{"option": "D", "reason": "..."}}
     ],
     "topic": "{research_brief.topic}",
-    "cognitive_level": "recall|application|analysis|synthesis"
+    "cognitive_level": "application"
 }}
 
 Create ONE question that:
 - Tests understanding of the research content
-- Uses a question stem similar to past papers (e.g., "Which of the following...", "Identify the...", "What is the...")
-- Has distractors based on common misconceptions mentioned in the research or style profile
+- Uses a question stem similar to past papers
 - Is appropriate for {difficulty} difficulty"""
 
         # Call LLM and parse response
-        response_dict = await self.call_with_json(
+        return await self.call_with_pydantic(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            model_class=DraftedQuestion,
             temperature=0.7,  # Higher temperature for creative question drafting
             max_tokens=2048
         )
-        
-        return DraftedQuestion(**response_dict)
     
     async def revise_question(
         self,
@@ -185,7 +166,7 @@ FEEDBACK TO ADDRESS:
 
 {research_context}
 
-Return the revised question in the same JSON format as the original draft.
+Returns the revised result as a JSON object (NOT schema).
 
 Ensure the revision:
 - Fixes all identified issues
@@ -193,14 +174,13 @@ Ensure the revision:
 - Preserves the cognitive level
 - Improves distractor quality"""
 
-        response_dict = await self.call_with_json(
+        return await self.call_with_pydantic(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            model_class=DraftedQuestion,
             temperature=0.6,
             max_tokens=2048
         )
-        
-        return DraftedQuestion(**response_dict)
     
     def _format_research_brief(self, brief: ResearchBrief) -> str:
         """Format ResearchBrief for LLM consumption."""

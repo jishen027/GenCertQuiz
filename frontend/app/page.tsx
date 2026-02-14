@@ -14,7 +14,8 @@ import {
   Zap,
   Target,
   AlertCircle,
-  FileText
+  FileText,
+  Trash2
 } from 'lucide-react';
 
 type FileItem = {
@@ -188,6 +189,26 @@ export default function Home() {
     }
   };
 
+  // Delete file handler
+  const handleDeleteFile = async (filename: string) => {
+    if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/files/${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete file');
+      }
+
+      await fetchFiles();
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      setError('Failed to delete file');
+    }
+  };
+
   // Generate questions using V2 endpoint with multi-agent metadata
   const triggerInference = async () => {
     // Client-side validation
@@ -328,13 +349,20 @@ export default function Home() {
                 ) : textbooks.length > 0 ? (
                   textbooks.map(file => (
                     <div key={file.id} className="group bg-white border border-[#E5E7EB] p-3 hover:border-black transition-all flex justify-between items-center">
-                      <div className="flex items-center gap-3 truncate">
+                      <div className="flex items-center gap-3 truncate flex-1">
                         <Book className="w-4 h-4 text-[#9CA3AF] flex-shrink-0" />
                         <div className="truncate">
                           <span className="text-[13px] truncate font-normal block">{file.name}</span>
                           <span className="text-[10px] text-[#9CA3AF]">{file.size}</span>
                         </div>
                       </div>
+                      <button
+                        onClick={() => handleDeleteFile(file.name)}
+                        className="text-gray-400 hover:text-red-600 transition-colors p-1"
+                        title="Delete file"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   ))
                 ) : (
@@ -371,13 +399,20 @@ export default function Home() {
                 ) : examPapers.length > 0 ? (
                   examPapers.map(file => (
                     <div key={file.id} className="group bg-white border border-[#E5E7EB] p-3 hover:border-black transition-all flex justify-between items-center">
-                      <div className="flex items-center gap-3 truncate">
+                      <div className="flex items-center gap-3 truncate flex-1">
                         <Binary className="w-4 h-4 text-[#9CA3AF] flex-shrink-0" />
                         <div className="truncate">
                           <span className="text-[13px] truncate font-normal block">{file.name}</span>
                           <span className="text-[10px] text-[#9CA3AF]">{file.size}</span>
                         </div>
                       </div>
+                      <button
+                        onClick={() => handleDeleteFile(file.name)}
+                        className="text-gray-400 hover:text-red-600 transition-colors p-1"
+                        title="Delete file"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   ))
                 ) : (
