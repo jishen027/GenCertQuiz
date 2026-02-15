@@ -111,7 +111,9 @@ class MultiAgentRAGEngine:
         topic: str,
         count: int = 5,
         difficulty: str = "medium",
-        max_total_attempts: int = 15
+        max_total_attempts: int = 15,
+        progress_callback: Optional[Any] = None,
+        question_callback: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Generate multiple high-quality questions on a topic using the multi-agent pipeline.
@@ -123,13 +125,31 @@ class MultiAgentRAGEngine:
             count: Number of questions to generate
             difficulty: Question difficulty (easy, medium, hard)
             max_total_attempts: Max total attempts (including retries)
+            progress_callback: Async callback function(stage, message) for progress updates
+            question_callback: Async callback function(question_dict) for streaming results
             
         Returns:
             List of generated questions with full metadata
         """
+        async def report_progress(stage: str, message: str):
+            if progress_callback:
+                try:
+                    await progress_callback(stage, message)
+                except Exception as e:
+                    print(f"Progress callback failed: {e}")
+
+        async def report_question(question_data: Dict[str, Any]):
+            if question_callback:
+                try:
+                    await question_callback(question_data)
+                except Exception as e:
+                    print(f"Question callback failed: {e}")
+
         print(f"\n{'='*60}")
         print(f"GENERATING {count} {difficulty.upper()} QUESTIONS ON: {topic}")
         print(f"{'='*60}")
+        
+        await report_progress("init", f"Starting generation of {count} {difficulty} questions on '{topic}'")
         
         # Phase 1: Knowledge & Style Ingestion
         print("\n📚 Phase 1: Knowledge & Style Ingestion")
@@ -137,21 +157,27 @@ class MultiAgentRAGEngine:
         
         # Researcher: Get facts from textbook
         print(f"  • Researcher: Extracting facts for '{topic}'...")
+        await report_progress("research", f"Researcher: Analyzing textbook content for '{topic}'...")
         research_brief = await self.researcher.research(topic, difficulty)
         print(f"    ✓ Found {len(research_brief.core_facts)} core facts")
         print(f"    ✓ Found {len(research_brief.key_definitions)} definitions")
         print(f"    ✓ Found {len(research_brief.formulas_and_rules)} formulas/rules")
         
+        await report_progress("research", f"Researcher: Found {len(research_brief.core_facts)} facts, {len(research_brief.key_definitions)} definitions")
+        
         # Style Analyzer: Get style profile from past papers
         print(f"  • Style Analyzer: Extracting style profile...")
+        await report_progress("style", "Style Analyzer: Extracting patterns from past papers...")
         style_profile = await self.style_analyzer.get_style_profile(topic)
         if style_profile:
             print(f"    ✓ Style profile extracted")
             print(f"      - Question stems: {len(style_profile.get('question_stems', []))}")
             print(f"      - Complexity: {style_profile.get('complexity', 'unknown')}")
             print(f"      - Common misconceptions: {len(style_profile.get('common_misconceptions', []))}")
+            await report_progress("style", "Style Analyzer: Profile extracted successfully")
         else:
             print(f"    ⚠ No style profile found (no exam papers ingested)")
+            await report_progress("style", "Style Analyzer: No past papers found, using default style")
         
         # Style Examples: Get sample questions
         print(f"  • Retriever: Fetching style examples...")
@@ -167,11 +193,15 @@ class MultiAgentRAGEngine:
         
         while len(questions) < count and attempts < max_total_attempts:
             attempts += 1
-            print(f"\n  Question {len(questions) + 1}/{count} (attempt {attempts})...")
+            q_num = len(questions) + 1
+            print(f"\n  Question {q_num}/{count} (attempt {attempts})...")
+            
+            await report_progress("draft", f"Generating Question {q_num}/{count}...")
             
             try:
                 # Agent 2: Psychometrician drafts the question
                 print(f"    • Psychometrician: Drafting question...")
+                await report_progress("draft", f"Psychometrician: Drafting question {q_num}...")
                 draft = await self.psychometrician.draft_question(
                     research_brief=research_brief,
                     style_profile=style_profile,
@@ -184,6 +214,7 @@ class MultiAgentRAGEngine:
                 
                 # Agent 3: Critic reviews and iterates
                 print(f"    • Critic: Reviewing question...")
+                await report_progress("critic", f"Critic: Reviewing draft for quality and accuracy...")
                 review = await self.critic.review(
                     question=draft,
                     research_brief=research_brief,
@@ -198,6 +229,8 @@ class MultiAgentRAGEngine:
                     
                     print(f"      ⚠ Not approved (score: {review.score}/10)")
                     print(f"      • Psychometrician: Revising based on feedback...")
+                    
+                    await report_progress("revise", f"Psychometrician: Improving question (Critic score: {review.score}/10)...")
                     
                     current_draft = await self.psychometrician.revise_question(
                         current_draft=current_draft,
@@ -214,13 +247,16 @@ class MultiAgentRAGEngine:
                 
                 if review.approved:
                     print(f"      ✓ Approved (score: {review.score}/10)")
+                    await report_progress("approve", f"Critic: Question approved (Score: {review.score}/10)")
                 else:
                     print(f"      ⚠ Not approved after {self.max_critic_iterations} revisions")
+                    await report_progress("reject", f"Critic: Question rejected after revisions")
                     continue
                 
                 # Check for duplicates
                 if await self.is_duplicate(current_draft.question):
                     print(f"    ⚠ Skipped (duplicate)")
+                    await report_progress("skip", "Skipping duplicate question")
                     continue
                 
                 # Convert to response format
@@ -228,8 +264,13 @@ class MultiAgentRAGEngine:
                 questions.append(question_dict)
                 print(f"    ✓ Question added")
                 
+                # Report success and stream question
+                await report_progress("success", f"Question {q_num} generated successfully")
+                await report_question(question_dict)
+                
             except Exception as e:
                 print(f"    ✗ Failed: {str(e)}")
+                await report_progress("error", f"Error generating question: {str(e)}")
                 continue
         
         # Summary

@@ -176,7 +176,9 @@ Be specific and thorough in your evaluation. If a check fails, explain exactly w
         if question.distractor_reasoning:
             sections.append("Distractor Reasoning:")
             for dr in question.distractor_reasoning:
-                sections.append(f"  Option {dr['option']}: {dr['reason']}")
+                opt = dr.get('option', '?')
+                reason = dr.get('reason', 'No reason provided')
+                sections.append(f"  Option {opt}: {reason}")
             sections.append("")
         
         return "\n".join(sections)

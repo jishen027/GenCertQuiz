@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 import tempfile
+import asyncio
 
 from models.schemas import (
     HealthResponse,
@@ -482,6 +483,127 @@ async def export_pdf(request: QuestionRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
+
+
+@app.post("/generate/stream")
+async def generate_questions_stream(request: QuestionRequest):
+    """
+    Generate exam questions with real-time progress streaming using SSE.
+    
+    Returns a stream of JSON events:
+    - {"type": "progress", "stage": "...", "message": "..."}
+    - {"type": "question", "data": {...}}
+    - {"type": "done"}
+    - {"type": "error", "message": "..."}
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    async def event_generator():
+        try:
+            embedder = EmbeddingService(db_pool)
+            rag_engine = MultiAgentRAGEngine(
+                db_pool,
+                embedder,
+                similarity_threshold=float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
+            )
+            
+            # Progress callback to report to stream
+            async def progress_callback(stage: str, message: str):
+                event = {
+                    "type": "progress",
+                    "stage": stage,
+                    "message": message
+                }
+                yield f"data: {json.dumps(event)}\n\n"
+
+            # Generate questions
+            # Note: We need to iterate over the generator if generate_questions was a generator,
+            # but here we are passing a callback to a regular async function.
+            # To bridge the callback (which yields) with this generator, we need a different approach 
+            # OR we can just rely on the fact that we can't easily yield from within the callback 
+            # if the callback is just awaited.
+            
+            # Wait, the callback *cannot* yield to the outer generator directly.
+            # I need to use an asyncio.Queue to bridge the callback and the generator.
+            
+            queue = asyncio.Queue()
+            
+            async def progress_callback_wrapper(stage: str, message: str):
+                await queue.put({
+                    "type": "progress",
+                    "stage": stage,
+                    "message": message
+                })
+            
+            # Question callback to report to stream
+            async def question_callback(question_data: Dict[str, Any]):
+                 # Ensure all fields are present for V2 schema
+                q_obj = QuestionResponseV2(**question_data)
+                event = {
+                    "type": "question",
+                    "data": q_obj.model_dump()
+                }
+                await queue.put(event)
+
+            # Run generation in a separate task
+            task = asyncio.create_task(
+                rag_engine.generate_questions(
+                    topic=request.topic,
+                    count=request.count,
+                    difficulty=request.difficulty,
+                    progress_callback=progress_callback_wrapper,
+                    question_callback=question_callback
+                )
+            )
+            
+            # Consumer loop
+            while not task.done():
+                try:
+                    # Wait for next event or task completion
+                    # We use a timeout to check task status periodically if no events come
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    error_event = {"type": "error", "message": f"Stream error: {str(e)}"}
+                    yield f"data: {json.dumps(error_event)}\n\n"
+            
+            # Check for exceptions in the task
+            try:
+                questions = await task
+                if not questions:
+                     # Only send error if NO questions were generated and it wasn't a partial success
+                     # But generate_questions returns list, so if empty list, then error
+                    error_event = {
+                        "type": "error", 
+                        "message": f"Could not generate questions for topic: {request.topic}"
+                    }
+                    yield f"data: {json.dumps(error_event)}\n\n"
+                else:
+                    # Yield done event instead of list
+                    done_event = {"type": "done"}
+                    yield f"data: {json.dumps(done_event)}\n\n"
+                    
+            except Exception as e:
+                error_event = {"type": "error", "message": str(e)}
+                yield f"data: {json.dumps(error_event)}\n\n"
+                
+            # Yield any remaining events in queue
+            while not queue.empty():
+                event = queue.get_nowait()
+                yield f"data: {json.dumps(event)}\n\n"
+
+        except Exception as e:
+            error_event = {"type": "error", "message": str(e)}
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream"
+    )
 
 
 if __name__ == "__main__":

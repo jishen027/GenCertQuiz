@@ -29,6 +29,19 @@ type DistractorReasoning = {
   reason: string;
 };
 
+type ProgressEvent = {
+  type: 'progress' | 'question' | 'done' | 'error';
+  stage?: string;
+  message?: string;
+  data?: any;
+};
+
+type LogEntry = {
+  message: string;
+  timestamp: string;
+  stage: string;
+};
+
 type Question = {
   id: number;
   context: string;
@@ -53,6 +66,7 @@ type FilesResponse = {
 
 type ErrorResponse = {
   detail?: string;
+  message?: string;
 };
 
 type QuestionResponseData = {
@@ -75,6 +89,11 @@ export default function Home() {
   const [examPapers, setExamPapers] = useState<FileItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
+  
+  // Progress state
+  const [progressLogs, setProgressLogs] = useState<LogEntry[]>([]);
+  const [currentStage, setCurrentStage] = useState<string>('');
+
   
   // Form state
   const [topic, setTopic] = useState('');
@@ -209,7 +228,7 @@ export default function Home() {
     }
   };
 
-  // Generate questions using V2 endpoint with multi-agent metadata
+  // Generate questions using Streaming endpoint
   const triggerInference = async () => {
     // Client-side validation
     if (!topic || topic.trim().length < 3) {
@@ -224,10 +243,13 @@ export default function Home() {
 
     setIsProcessing(true);
     setError(null);
+    setQuestions([]);
+    setProgressLogs([]);
+    setCurrentStage('init');
     
     try {
-      // Use V2 endpoint for full multi-agent metadata
-      const response = await fetch('http://localhost:8000/generate/v2', {
+      // Use Streaming endpoint
+      const response = await fetch('http://localhost:8000/generate/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic: topic.trim(), difficulty: complexity, count: quantity }),
@@ -235,37 +257,90 @@ export default function Home() {
 
       if (!response.ok) {
         const errorData: ErrorResponse = await response.json().catch(() => ({ detail: 'Generation failed' }));
-        throw new Error(errorData.detail || 'Failed to generate questions');
+        throw new Error(errorData.detail || 'Failed to start generation');
       }
 
-      const data: QuestionResponseData[] = await response.json();
-      
-      if (!data || data.length === 0) {
-        throw new Error('No questions generated. Try uploading more textbooks or changing the topic.');
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Response body is not readable');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Process buffer for SSE messages
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const dataStr = line.slice(6);
+              const event: ProgressEvent = JSON.parse(dataStr);
+              
+              if (event.type === 'progress') {
+                const newLog: LogEntry = {
+                  message: event.message || '',
+                  timestamp: new Date().toLocaleTimeString(),
+                  stage: event.stage || 'info'
+                };
+                
+                setProgressLogs(prev => [...prev, newLog]);
+                if (event.stage) setCurrentStage(event.stage);
+                
+                // Keep logs scrolled to bottom
+                const logContainer = document.getElementById('log-container');
+                if (logContainer) {
+                  logContainer.scrollTop = logContainer.scrollHeight;
+                }
+              } 
+              else if (event.type === 'question' && event.data) {
+                // Process individual question
+                const q = event.data;
+                const newQuestion: Question = {
+                  id: questions.length + 1, // Use current length + 1 (closure issue handled by functional update below if needed, but here we can just use setQuestions callback)
+                  context: "SOURCE: Multi-Agent RAG",
+                  question: q.question,
+                  options: q.options,
+                  answer: q.answer,
+                  explanation: q.explanation,
+                  difficulty: q.difficulty,
+                  topic: q.topic || topic.trim(),
+                  cognitive_level: q.cognitive_level || 'application',
+                  quality_score: q.quality_score || 7,
+                  distractor_reasoning: q.distractor_reasoning || [],
+                  source_references: q.source_references || [],
+                  quality_checks: q.quality_checks || {}
+                };
+                
+                setQuestions(prev => [...prev, { ...newQuestion, id: prev.length + 1 }]);
+              }
+              else if (event.type === 'done') {
+                 setCurrentStage('complete');
+                 setIsProcessing(false);
+              }
+              else if (event.type === 'error') {
+                throw new Error(event.message || 'Unknown error during streaming');
+              }
+            } catch (e) {
+              console.error('Error parsing SSE event:', e);
+            }
+          }
+        }
       }
       
-      // Map V2 response to frontend format
-      const mappedQuestions: Question[] = data.map((q, idx: number) => ({
-        id: idx + 1,
-        context: "SOURCE: Multi-Agent RAG",
-        question: q.question,
-        options: q.options,
-        answer: q.answer,
-        explanation: q.explanation,
-        difficulty: q.difficulty,
-        // V2 multi-agent metadata
-        topic: q.topic || topic.trim(),
-        cognitive_level: q.cognitive_level || 'application',
-        quality_score: q.quality_score || 7,
-        distractor_reasoning: q.distractor_reasoning || [],
-        source_references: q.source_references || [],
-        quality_checks: q.quality_checks || {}
-      }));
-      
-      setQuestions(mappedQuestions);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Backend connection failed. Make sure the server is running on port 8000.';
+      const message = error instanceof Error ? error.message : 'Backend connection failed';
       setError(message);
+      setProgressLogs(prev => [...prev, {
+        message: `ERROR: ${message}`,
+        timestamp: new Date().toLocaleTimeString(),
+        stage: 'error'
+      }]);
     } finally {
       setIsProcessing(false);
     }
@@ -491,6 +566,42 @@ export default function Home() {
                   )}
                 </button>
               </div>
+
+              {/* Progress Stream Log */}
+              {(isProcessing || progressLogs.length > 0) && (
+                <div className="mt-8 bg-black text-green-400 p-6 font-mono text-xs rounded-sm border border-gray-800 shadow-xl">
+                  <div className="flex justify-between items-center mb-4 border-b border-gray-800 pb-2">
+                    <span className="uppercase tracking-widest font-bold flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${isProcessing ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></span>
+                      System Logs
+                    </span>
+                    <span className="text-gray-500">{currentStage.toUpperCase()}</span>
+                  </div>
+                  <div id="log-container" className="h-64 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-gray-700">
+                    {progressLogs.length === 0 ? (
+                      <span className="text-gray-600 italic">Waiting for process initiation...</span>
+                    ) : (
+                      progressLogs.map((log, idx) => (
+                        <div key={idx} className="flex gap-4 hover:bg-gray-900/50 p-1 rounded">
+                          <span className="text-gray-600 flex-shrink-0">[{log.timestamp}]</span>
+                          <span className="text-green-400/90 text-[10px] w-16 uppercase">{log.stage}</span>
+                          <span className={`${
+                            log.stage === 'error' ? 'text-red-400' : 
+                            log.stage === 'success' ? 'text-blue-400 font-bold' : 
+                            log.stage === 'approve' ? 'text-yellow-400' :
+                            'text-gray-300'
+                          }`}>
+                            {log.message}
+                            {isProcessing && idx === progressLogs.length - 1 && (
+                              <span className="inline-block w-1.5 h-3 ml-1 bg-green-500 animate-pulse align-middle"></span>
+                            )}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </section>
         </div>
