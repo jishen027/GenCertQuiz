@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -71,6 +71,17 @@ async def lifespan(app: FastAPI):
         )
 
         print("✓ Database connection pool created")
+        
+        # Check API Keys
+        if not os.getenv("OPENAI_API_KEY"):
+            print("! WARNING: OPENAI_API_KEY is not set")
+        else:
+            print("✓ OPENAI_API_KEY found")
+            
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            print("! WARNING: ANTHROPIC_API_KEY is not set")
+        else:
+            print("✓ ANTHROPIC_API_KEY found")
     except Exception as e:
         print(f"✗ Failed to connect to database: {e}")
         db_pool = None
@@ -597,7 +608,9 @@ async def generate_questions_stream(request: QuestionRequest):
                 yield f"data: {json.dumps(event)}\n\n"
 
         except Exception as e:
-            error_event = {"type": "error", "message": str(e)}
+            import traceback
+            traceback.print_exc()
+            error_event = {"type": "error", "message": f"Server Error: {str(e)}"}
             yield f"data: {json.dumps(error_event)}\n\n"
 
     return StreamingResponse(

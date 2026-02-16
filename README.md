@@ -60,36 +60,56 @@ graph TD
     Critic -->|Approved Question| User
 ```
 
-## ⚡ Quick Start
+## ⚡ Quick Start (Docker)
+
+The easiest way to run the application is using Docker Compose, which handles the frontend, backend, and database.
 
 ### Prerequisites
-- Docker Desktop
-- Python 3.11+
-- Node.js 18+
-- OpenAI API Key
+- Docker & Docker Compose
+- API Keys (OpenAI, Anthropic)
 
-### 1. Start Infrastructure
+### 1. Configure Environment
+Create a `.env` file in the `backend/` directory (or rely on the default `docker-compose.yml` mapping):
+
 ```bash
-docker-compose up -d
+# Copy example env in backend
+cp backend/.env.example backend/.env
+# Edit backend/.env to add your API keys
 ```
 
-### 2. Backend Setup
+### 2. Run with Docker Compose
+```bash
+docker-compose up --build
+```
+
+Access the application:
+- **Frontend**: http://localhost:3000
+- **Backend API Docs**: http://localhost:8000/docs
+
+---
+
+## 🛠️ Development Setup (Manual)
+
+If you want to run services individually for development:
+
+### 1. Database
+```bash
+docker-compose up -d db
+```
+
+### 2. Backend
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 cp .env.example .env  # Add your API keys
-python main.py
+uvicorn main:app --reload --port 8000
 ```
 
-### 3. Frontend Setup
+### 3. Frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-
-Visit:
-- Frontend: http://localhost:3000
-- Backend Docs: http://localhost:8000/docs
