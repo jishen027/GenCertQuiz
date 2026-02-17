@@ -19,7 +19,8 @@ from models.schemas import (
     GenerationMetadata,
     FilesResponse,
     StyleProfile,
-    AnalysisResult
+    AnalysisResult,
+    ExportRequest
 )
 from services.pdf_parser import PDFParser
 from services.embedder import EmbeddingService
@@ -452,36 +453,21 @@ async def analyze_style_profile(filename: str):
 
 
 @app.post("/export-pdf")
-async def export_pdf(request: QuestionRequest):
+async def export_pdf(request: ExportRequest):
     """
-    Generate questions and export as PDF file.
+    Generate PDF file from provided questions.
     
     Request body:
+    - questions: List of question objects (required)
     - topic: string (required)
-    - difficulty: string (easy/medium/hard)
-    - count: int (number of questions)
+    - difficulty: string
     
     Returns:
     - PDF file download
     """
     try:
-        embedder = EmbeddingService(db_pool)
-        rag_engine = MultiAgentRAGEngine(db_pool, embedder)
-        
-        questions = await rag_engine.generate_questions(
-            topic=request.topic,
-            count=request.count,
-            difficulty=request.difficulty
-        )
-        
-        if not questions:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Could not generate questions for topic: {request.topic}"
-            )
-        
         exporter = PDFExporter()
-        pdf_buffer = exporter.generate_pdf(questions, request.topic, request.difficulty)
+        pdf_buffer = exporter.generate_pdf(request.questions, request.topic, request.difficulty)
         
         filename = f"{request.topic.replace(' ', '_')}_questions.pdf"
         return StreamingResponse(
@@ -491,7 +477,7 @@ async def export_pdf(request: QuestionRequest):
         )
         
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
 

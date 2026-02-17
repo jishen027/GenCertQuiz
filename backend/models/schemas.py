@@ -2,11 +2,19 @@ from typing import Literal, Dict, Any, List
 from pydantic import BaseModel, Field
 
 
+
 class QuestionRequest(BaseModel):
     """Request model for generating quiz questions"""
     topic: str = Field(..., min_length=3, description="The topic to generate questions about")
     difficulty: Literal["easy", "medium", "hard"] = Field(default="medium", description="Question difficulty level")
     count: int = Field(default=5, ge=1, le=50, description="Number of questions to generate")
+
+
+class ExportRequest(BaseModel):
+    """Request model for exporting questions to PDF"""
+    questions: List[Dict[str, Any]] = Field(..., description="List of questions to export")
+    topic: str = Field(..., description="Topic of the quiz")
+    difficulty: str = Field(..., description="Difficulty level")
 
 
 class QuestionResponse(BaseModel):

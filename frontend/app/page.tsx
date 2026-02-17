@@ -15,7 +15,9 @@ import {
   Target,
   AlertCircle,
   FileText,
-  Trash2
+  Trash2,
+  Download,
+  FileJson
 } from 'lucide-react';
 
 type FileItem = {
@@ -346,6 +348,54 @@ export default function Home() {
     }
   };
 
+  // Download handlers
+  const handleDownloadJSON = () => {
+    if (questions.length === 0) return;
+    
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(questions, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `${topic.trim().replace(/\s+/g, '_')}_questions.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const handleDownloadPDF = async () => {
+    if (questions.length === 0) return;
+    
+    try {
+      const response = await fetch('http://localhost:8000/export-pdf', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          questions: questions,
+          topic: topic.trim(),
+          difficulty: complexity
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate PDF');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${topic.trim().replace(/\s+/g, '_')}_questions.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch (error) {
+      console.error('PDF download error:', error);
+      setError('Failed to download PDF. Please try again.');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F9FAFB] text-[#1A1A1A] font-sans selection:bg-black selection:text-white">
       {/* Minimalist Header */}
@@ -612,7 +662,26 @@ export default function Home() {
             <div className="flex items-center gap-4">
               <div className="h-[1px] flex-grow bg-[#E5E7EB]"></div>
               <span className="text-[11px] font-bold uppercase tracking-[0.5em] text-[#9CA3AF]">Output Stream</span>
-              <div className="h-[1px] flex-grow bg-[#E5E7EB]"></div>
+              <div className="h-[1px] flex-grow bg-[#E5E7EB] mr-4"></div>
+              
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleDownloadJSON}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded transition-colors"
+                  title="Download as JSON"
+                >
+                  <FileJson className="w-3.5 h-3.5" />
+                  JSON
+                </button>
+                <button 
+                  onClick={handleDownloadPDF}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-black hover:bg-gray-800 text-white text-xs font-medium rounded transition-colors"
+                  title="Download as PDF"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  PDF
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
