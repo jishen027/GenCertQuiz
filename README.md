@@ -1,6 +1,12 @@
 # GenCertQuiz
 
+
 A RAG-powered certification quiz generator that uses a **Multi-Agent AI System** to ingest textbooks and generate high-quality, exam-style questions.
+
+<div align="center">
+  <img src="media/homepage.png" alt="Homepage" width="45%" />
+  <img src="media/questions.png" alt="Quiz Questions" width="45%" />
+</div>
 
 ## 🚀 Key Features
 
