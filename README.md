@@ -1,7 +1,16 @@
-# GenCertQuiz
+# 🎓 GenCertQuiz: Transform Textbooks into Professional Exams with Multi-Agent AI
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
 
-A RAG-powered certification quiz generator that uses a **Multi-Agent AI System** to ingest textbooks and generate high-quality, exam-style questions.
+> **Don't just read the textbook—master it.** GenCertQuiz uses a sophisticated RAG-powered Multi-Agent system to analyze your study materials and generate high-quality, exam-style quizzes that mimic real certification standards.
+
+## 🌟 Why GenCertQuiz?
+Most AI quiz generators just rephrase text. GenCertQuiz acts like a professional exam board:
+- **The Researcher** deep-dives into facts.
+- **The Style Analyzer** mimics the tone of specific exams (e.g., AWS SAA-C03).
+- **The Critic** ensures no hallucinations and high academic rigor.
 
 <div align="center">
   <img src="media/homepage.png" alt="Homepage"/>
