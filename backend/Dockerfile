@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy project files
 COPY pyproject.toml .
-COPY README.md .
+
 # The context is ./backend, so we are already inside the backend directory.
 # But wait, looking at the previous file list of `backend`:
 # It contains `main.py`, `services/`, etc.

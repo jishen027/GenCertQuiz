@@ -10,8 +10,9 @@ from .researcher import ResearchBrief
 class DraftedQuestion(BaseModel):
     """Structured output from the Psychometrician agent."""
     question: str
+    question_type: str  # single_select or multiple_selection
     options: Dict[str, str]  # A, B, C, D
-    answer: str  # A, B, C, or D
+    answer: str  # A, B, C, or D (or "A, C" for multiple selection)
     explanation: str
     difficulty: str
     distractor_reasoning: List[Dict[str, str]]  # Why each distractor is chosen
@@ -34,7 +35,8 @@ class PsychometricianAgent(BaseAgent):
         research_brief: ResearchBrief,
         style_profile: Optional[Dict[str, Any]] = None,
         style_examples: Optional[List[Dict[str, Any]]] = None,
-        difficulty: str = "medium"
+        difficulty: str = "medium",
+        forced_question_type: Optional[str] = None
     ) -> DraftedQuestion:
         """
         Draft a single exam question based on research brief and style guidance.
@@ -44,6 +46,7 @@ class PsychometricianAgent(BaseAgent):
             style_profile: Extracted style profile from past papers
             style_examples: Sample questions for style reference
             difficulty: Target difficulty level
+            forced_question_type: Force a specific question type (single_select or multiple_selection)
             
         Returns:
             DraftedQuestion with complete question structure
@@ -58,7 +61,14 @@ class PsychometricianAgent(BaseAgent):
         profile_context = self._format_style_profile(style_profile) if style_profile else ""
         
         # Build prompts
-        system_prompt = """You are a Senior Examiner and Psychometrician for a professional certification examination board. Your expertise includes:
+        # Determine type instructions
+        type_instruction = "Determine if the question should be SINGLE_SELECT or MULTIPLE_SELECTION based on content."
+        if forced_question_type == "single_select":
+            type_instruction = "Create a SINGLE_SELECT question (one correct answer)."
+        elif forced_question_type == "multiple_selection":
+            type_instruction = "Create a MULTIPLE_SELECTION question (at least two correct answers). IMPORTANT: Append '(choice 2)' to the end of the question text."
+
+        system_prompt = f"""You are a Senior Examiner and Psychometrician for a professional certification examination board. Your expertise includes:
 
 1. QUESTION CRAFTING: Create exam-style multiple-choice questions that are challenging but fair
 2. STYLE MIRRORING: Match the linguistic patterns, complexity, and tone of actual exam papers
@@ -67,7 +77,9 @@ class PsychometricianAgent(BaseAgent):
 
 STRICT REQUIREMENTS:
 - Use EXACTLY 4 options (A, B, C, D)
-- Only ONE correct answer
+- {type_instruction}
+- For SINGLE_SELECT: Only ONE correct answer
+- For MULTIPLE_SELECTION: At least TWO correct answers AND append '(choice 2)' to question text
 - Make distractors plausible but clearly wrong to knowledgeable candidates
 - Distractors should reflect common student misconceptions
 - Questions must be answerable from the provided RESEARCH_CONTENT
@@ -81,7 +93,7 @@ DIFFICULTY GUIDELINES:
 
 CRITICAL: Never invent facts. Only use information from the RESEARCH_CONTENT."""
 
-        user_prompt = f"""Draft a {difficulty} difficulty multiple-choice question.
+        user_prompt = f"""Draft a {difficulty} difficulty question.
 
 TOPIC: {research_brief.topic}
 
@@ -94,8 +106,9 @@ TOPIC: {research_brief.topic}
 Returns the result as a JSON object (NOT the schema definition, but the actual data) with this structure:
 {{
     "question": "Question text...",
+    "question_type": "single_select" OR "multiple_selection",
     "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
-    "answer": "A",
+    "answer": "A" OR "A, C" (comma separated for multiple),
     "explanation": "...",
     "difficulty": "{difficulty}",
     "distractor_reasoning": [
@@ -111,7 +124,8 @@ Returns the result as a JSON object (NOT the schema definition, but the actual d
 Create ONE question that:
 - Tests understanding of the research content
 - Uses a question stem similar to past papers
-- Is appropriate for {difficulty} difficulty"""
+- Is appropriate for {difficulty} difficulty
+- matches the requested type: {forced_question_type if forced_question_type else "any valid type"}"""
 
         # Call LLM and parse response
         return await self.call_with_pydantic(
@@ -156,6 +170,7 @@ Your task:
 CURRENT DRAFT:
 {{
     "question": "{current_draft.question}",
+    "question_type": "{current_draft.question_type}",
     "options": {current_draft.options},
     "answer": "{current_draft.answer}",
     "explanation": "{current_draft.explanation}"

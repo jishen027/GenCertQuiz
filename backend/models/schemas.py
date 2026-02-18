@@ -40,6 +40,10 @@ class QuestionResponseV2(BaseModel):
         description="Why each distractor was chosen - what misconception it tests"
     )
     topic: str = Field(..., description="The topic this question covers")
+    question_type: Literal["single_select", "multiple_selection"] = Field(
+        default="single_select",
+        description="Type of question: single_select (one answer) or multiple_selection (multiple answers)"
+    )
     cognitive_level: str = Field(
         ...,
         description="Cognitive level: recall, application, analysis, or synthesis"

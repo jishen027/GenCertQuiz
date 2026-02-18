@@ -64,7 +64,7 @@ Your evaluation criteria:
 2. DISTRACTOR QUALITY
    - Are distractors plausible but clearly wrong to knowledgeable candidates?
    - Do distractors test common misconceptions?
-   - Is there only ONE clearly correct answer?
+   - Is the answer count correct (1 for SINGLE_SELECT, >1 for MULTIPLE_SELECTION)?
 
 3. NO ANSWER GIVEAWAY
    - Does the question structure accidentally reveal the answer?
@@ -157,13 +157,15 @@ Be specific and thorough in your evaluation. If a check fails, explain exactly w
         """Format DraftedQuestion for LLM consumption."""
         sections = ["DRAFTED QUESTION:"]
         sections.append(f"Question: {question.question}")
+        sections.append(f"Type: {question.question_type}")
         sections.append(f"Difficulty: {question.difficulty}")
         sections.append(f"Cognitive Level: {question.cognitive_level}")
         sections.append("")
         
         sections.append("Options:")
+        correct_answers = [a.strip() for a in question.answer.split(',')]
         for key, value in question.options.items():
-            marker = " ✓ (CORRECT)" if key == question.answer else ""
+            marker = " ✓ (CORRECT)" if key in correct_answers else ""
             sections.append(f"  {key}. {value}{marker}")
         sections.append("")
         

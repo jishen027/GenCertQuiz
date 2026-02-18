@@ -191,22 +191,43 @@ class MultiAgentRAGEngine:
         questions = []
         attempts = 0
         
+        # Calculate how many multiple selection questions we need (20%)
+        num_multi_questions = int(count * 0.2)
+        # We will generate multi-select questions at specific intervals to distribute them
+        # or simply force the first N questions to be multi-select.
+        # Let's use a simple counter approach.
+        generated_multi_count = 0
+        
         while len(questions) < count and attempts < max_total_attempts:
             attempts += 1
             q_num = len(questions) + 1
             print(f"\n  Question {q_num}/{count} (attempt {attempts})...")
             
-            await report_progress("draft", f"Generating Question {q_num}/{count}...")
+            # Determine forced type for this question
+            # If we still need multi-select questions, and the current slot suggests it's time, or if we are running out of slots
+            remaining_slots = count - len(questions)
+            remaining_multi_needed = num_multi_questions - generated_multi_count
+            
+            forced_type = "single_select"
+            # Force multi-select if we still need them and:
+            # 1. We're at a 5th interval (20% -> 1 in 5)
+            # 2. Or we're running out of slots and must fill the quota
+            if remaining_multi_needed > 0:
+                if (q_num % 5 == 0) or (remaining_slots <= remaining_multi_needed):
+                    forced_type = "multiple_selection"
+            
+            await report_progress("draft", f"Generating Question {q_num}/{count} ({forced_type})...")
             
             try:
                 # Agent 2: Psychometrician drafts the question
-                print(f"    • Psychometrician: Drafting question...")
+                print(f"    • Psychometrician: Drafting question ({forced_type})...")
                 await report_progress("draft", f"Psychometrician: Drafting question {q_num}...")
                 draft = await self.psychometrician.draft_question(
                     research_brief=research_brief,
                     style_profile=style_profile,
                     style_examples=style_examples,
-                    difficulty=difficulty
+                    difficulty=difficulty,
+                    forced_question_type=forced_type
                 )
                 print(f"      ✓ Draft created")
                 print(f"        - Cognitive level: {draft.cognitive_level}")
@@ -262,6 +283,10 @@ class MultiAgentRAGEngine:
                 # Convert to response format
                 question_dict = self._draft_to_response(current_draft, review)
                 questions.append(question_dict)
+                
+                if question_dict.get('question_type') == 'multiple_selection':
+                    generated_multi_count += 1
+                
                 print(f"    ✓ Question added")
                 
                 # Report success and stream question
@@ -308,6 +333,7 @@ class MultiAgentRAGEngine:
         """
         return {
             "question": draft.question,
+            "question_type": draft.question_type,
             "options": draft.options,
             "answer": draft.answer,
             "explanation": draft.explanation,
