@@ -17,13 +17,23 @@ import {
   FileText,
   Trash2,
   Download,
-  FileJson
+  FileJson,
+  Tags,
+  Check,
+  PlusCircle,
+  RefreshCw
 } from 'lucide-react';
 
 type FileItem = {
   id: string;
   name: string;
   size: string;
+};
+
+type TopicItem = {
+  id: string;
+  name: string;
+  source_filename: string;
 };
 
 type DistractorReasoning = {
@@ -96,9 +106,14 @@ export default function Home() {
   const [progressLogs, setProgressLogs] = useState<LogEntry[]>([]);
   const [currentStage, setCurrentStage] = useState<string>('');
 
-  
+  // Topics state
+  const [availableTopics, setAvailableTopics] = useState<TopicItem[]>([]);
+  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+  const [customTopic, setCustomTopic] = useState('');
+  const [loadingTopics, setLoadingTopics] = useState(false);
+  const [regeneratingTopics, setRegeneratingTopics] = useState(false);
+
   // Form state
-  const [topic, setTopic] = useState('');
   const [complexity, setComplexity] = useState('medium');
   const [quantity, setQuantity] = useState(5);
 
@@ -138,9 +153,26 @@ export default function Home() {
     }
   };
 
-  // Load files from database on mount
+  // Fetch available topics from database
+  const fetchTopics = async () => {
+    setLoadingTopics(true);
+    try {
+      const response = await fetch('http://localhost:8000/topics');
+      if (response.ok) {
+        const data: { topics: TopicItem[] } = await response.json();
+        setAvailableTopics(data.topics);
+      }
+    } catch (err) {
+      console.error('Failed to load topics from database');
+    } finally {
+      setLoadingTopics(false);
+    }
+  };
+
+  // Load files and topics from database on mount
   useEffect(() => {
     fetchFiles();
+    fetchTopics();
   }, []);
 
   // File upload handlers
@@ -166,8 +198,8 @@ export default function Home() {
         throw new Error(errorData.detail || 'Failed to upload textbook');
       }
 
-      // Refresh file list from database
-      await fetchFiles();
+      // Refresh file list and topics from database
+      await Promise.all([fetchFiles(), fetchTopics()]);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Backend connection failed. Make sure the server is running on port 8000.';
       setError(message);
@@ -210,7 +242,7 @@ export default function Home() {
     }
   };
 
-  // Delete file handler
+  // Delete file handler — also removes associated topics
   const handleDeleteFile = async (filename: string) => {
     if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
 
@@ -223,18 +255,59 @@ export default function Home() {
         throw new Error('Failed to delete file');
       }
 
-      await fetchFiles();
+      // Refresh files and topics (backend cascade-deleted topics)
+      await Promise.all([fetchFiles(), fetchTopics()]);
+      // Remove any selected topics that came from this file
+      setSelectedTopics(prev =>
+        prev.filter(t => !availableTopics.find(at => at.source_filename === filename && at.name === t))
+      );
     } catch (error) {
       console.error('Error deleting file:', error);
       setError('Failed to delete file');
     }
   };
 
+  // Toggle a topic in/out of the selected set
+  const toggleTopic = (topicName: string) => {
+    setSelectedTopics(prev =>
+      prev.includes(topicName) ? prev.filter(t => t !== topicName) : [...prev, topicName]
+    );
+  };
+
+  // Add a custom topic typed by the user
+  const addCustomTopic = () => {
+    const trimmed = customTopic.trim();
+    if (!trimmed || selectedTopics.includes(trimmed)) return;
+    setSelectedTopics(prev => [...prev, trimmed]);
+    setCustomTopic('');
+  };
+
+  // Remove a topic from the selection
+  const removeSelectedTopic = (topicName: string) => {
+    setSelectedTopics(prev => prev.filter(t => t !== topicName));
+  };
+
+  // Regenerate all topics from uploaded textbooks
+  const handleRegenerateTopics = async () => {
+    if (regeneratingTopics) return;
+    setRegeneratingTopics(true);
+    try {
+      const res = await fetch('http://localhost:8000/topics/regenerate', { method: 'POST' });
+      if (!res.ok) throw new Error('Regeneration failed');
+      await fetchTopics();
+    } catch (err) {
+      console.error('Failed to regenerate topics:', err);
+      setError('Failed to regenerate topics. Make sure the backend is running.');
+    } finally {
+      setRegeneratingTopics(false);
+    }
+  };
+
   // Generate questions using Streaming endpoint
   const triggerInference = async () => {
     // Client-side validation
-    if (!topic || topic.trim().length < 3) {
-      setError('Please enter a topic with at least 3 characters');
+    if (selectedTopics.length === 0) {
+      setError('Please select at least one topic (or add a custom topic)');
       return;
     }
 
@@ -254,7 +327,7 @@ export default function Home() {
       const response = await fetch('http://localhost:8000/generate/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: topic.trim(), difficulty: complexity, count: quantity }),
+        body: JSON.stringify({ topics: selectedTopics, difficulty: complexity, count: quantity }),
       });
 
       if (!response.ok) {
@@ -311,7 +384,7 @@ export default function Home() {
                   answer: q.answer,
                   explanation: q.explanation,
                   difficulty: q.difficulty,
-                  topic: q.topic || topic.trim(),
+                  topic: q.topic || selectedTopics.join('; '),
                   cognitive_level: q.cognitive_level || 'application',
                   quality_score: q.quality_score || 7,
                   distractor_reasoning: q.distractor_reasoning || [],
@@ -352,10 +425,11 @@ export default function Home() {
   const handleDownloadJSON = () => {
     if (questions.length === 0) return;
     
+    const allTopics = selectedTopics.join('_').replace(/\s+/g, '_') || 'questions';
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(questions, null, 2));
     const downloadAnchorNode = document.createElement('a');
     downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", `${topic.trim().replace(/\s+/g, '_')}_questions.json`);
+    downloadAnchorNode.setAttribute("download", `${allTopics}_questions.json`);
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
@@ -365,6 +439,7 @@ export default function Home() {
     if (questions.length === 0) return;
     
     try {
+      const allTopics = selectedTopics.join('; ');
       const response = await fetch('http://localhost:8000/export-pdf', {
         method: 'POST',
         headers: {
@@ -372,7 +447,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           questions: questions,
-          topic: topic.trim(),
+          topic: allTopics,
           difficulty: complexity
         }),
       });
@@ -385,7 +460,7 @@ export default function Home() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${topic.trim().replace(/\s+/g, '_')}_questions.pdf`;
+      a.download = `${selectedTopics.join('_').replace(/\s+/g, '_') || 'questions'}_questions.pdf`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -556,19 +631,109 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-                {/* Topic Input */}
-                <div className="space-y-4">
-                  <label className="text-[11px] font-bold uppercase text-[#9CA3AF] tracking-wider block">Target Topic</label>
-                  <div className="relative">
-                    <input 
-                      type="text" 
-                      value={topic}
-                      onChange={(e) => setTopic(e.target.value)}
-                      placeholder="e.g. Distributed Systems Architecture"
-                      className="w-full bg-transparent border-b border-[#E5E7EB] py-2 focus:border-black outline-none transition-colors text-sm"
-                    />
-                    <Search className="absolute right-0 top-2 w-4 h-4 text-[#D1D5DB]" />
+                {/* Topic Multi-Select Picker */}
+                <div className="space-y-4 md:col-span-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Tags className="w-4 h-4 text-[#9CA3AF]" />
+                      <label className="text-[11px] font-bold uppercase text-[#9CA3AF] tracking-wider block">
+                        Target Topics
+                      </label>
+                      {(loadingTopics || regeneratingTopics) && (
+                        <span className="text-[10px] text-[#9CA3AF] italic">
+                          {regeneratingTopics ? 'Regenerating…' : 'Loading…'}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRegenerateTopics}
+                      disabled={regeneratingTopics || textbooks.length === 0}
+                      title={textbooks.length === 0 ? 'Upload a textbook first' : 'Regenerate topics from uploaded textbooks'}
+                      className="flex items-center gap-1.5 text-[11px] text-[#9CA3AF] hover:text-black disabled:opacity-30 transition-colors"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${regeneratingTopics ? 'animate-spin' : ''}`} />
+                      Regenerate
+                    </button>
                   </div>
+
+                  {/* Available topics from DB */}
+                  {availableTopics.length > 0 ? (
+                    <div className="flex flex-wrap gap-2 pb-2 max-h-36 overflow-y-auto">
+                      {availableTopics.map((t) => {
+                        const isSelected = selectedTopics.includes(t.name);
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => toggleTopic(t.name)}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                              isSelected
+                                ? 'bg-black text-white border-black'
+                                : 'bg-white text-[#374151] border-[#D1D5DB] hover:border-black'
+                            }`}
+                          >
+                            {isSelected && <Check className="w-3 h-3" />}
+                            {t.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    !loadingTopics && (
+                      <p className="text-xs text-[#9CA3AF] italic">
+                        No topics extracted yet — upload a textbook to auto-extract topics
+                      </p>
+                    )
+                  )}
+
+                  {/* Custom topic input */}
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        value={customTopic}
+                        onChange={(e) => setCustomTopic(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && addCustomTopic()}
+                        placeholder="Add a custom topic…"
+                        className="w-full bg-transparent border-b border-[#E5E7EB] py-2 focus:border-black outline-none transition-colors text-sm pr-8"
+                      />
+                      <Search className="absolute right-0 top-2 w-4 h-4 text-[#D1D5DB]" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addCustomTopic}
+                      disabled={!customTopic.trim()}
+                      className="text-[#9CA3AF] hover:text-black disabled:opacity-30 transition-colors"
+                      title="Add custom topic"
+                    >
+                      <PlusCircle className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  {/* Selected topics summary */}
+                  {selectedTopics.length > 0 && (
+                    <div className="pt-2 border-t border-[#F3F4F6]">
+                      <p className="text-[10px] uppercase tracking-wider text-[#9CA3AF] font-bold mb-2">Selected</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedTopics.map((t) => (
+                          <span
+                            key={t}
+                            className="inline-flex items-center gap-1 bg-black text-white text-xs px-2.5 py-1 rounded-full"
+                          >
+                            {t}
+                            <button
+                              type="button"
+                              onClick={() => removeSelectedTopic(t)}
+                              className="text-white/60 hover:text-white ml-0.5"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Parameters */}
@@ -600,7 +765,7 @@ export default function Home() {
               <div className="mt-16">
                 <button 
                   onClick={triggerInference}
-                  disabled={isProcessing || !topic}
+                  disabled={isProcessing || selectedTopics.length === 0}
                   className="w-full bg-black text-white py-4 flex items-center justify-center gap-4 hover:bg-[#2A2A2A] transition-all disabled:bg-[#D1D5DB] group"
                 >
                   {isProcessing ? (

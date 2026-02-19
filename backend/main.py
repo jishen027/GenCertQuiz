@@ -20,7 +20,9 @@ from models.schemas import (
     FilesResponse,
     StyleProfile,
     AnalysisResult,
-    ExportRequest
+    ExportRequest,
+    TopicItem,
+    TopicsListResponse
 )
 from services.pdf_parser import PDFParser
 from services.embedder import EmbeddingService
@@ -28,6 +30,7 @@ from services.vision import VisionService
 from services.rag_engine import MultiAgentRAGEngine, RAGEngine
 from services.pdf_exporter import PDFExporter
 from services.style_analyzer import StyleAnalyzer
+from services.topic_extractor import TopicExtractor
 
 # Load environment variables
 load_dotenv()
@@ -213,15 +216,128 @@ async def delete_file(filename: str):
                 filename
             )
             
+            # Delete associated topics
+            t_result = await conn.execute(
+                "DELETE FROM topics WHERE source_filename = $1",
+                filename
+            )
+            
             return {
                 "message": f"Deleted {filename}",
                 "details": {
                     "knowledge_base_chunks": kb_result.replace("DELETE ", ""),
-                    "style_profiles": sp_result.replace("DELETE ", "")
+                    "style_profiles": sp_result.replace("DELETE ", ""),
+                    "topics": t_result.replace("DELETE ", "")
                 }
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
+
+@app.get("/topics", response_model=TopicsListResponse)
+async def list_topics():
+    """
+    Get all extracted topics from the database.
+    Returns topics grouped across all ingested textbooks.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id::text, name, source_filename
+                FROM topics
+                ORDER BY source_filename, name
+                """
+            )
+            topics = [
+                TopicItem(
+                    id=row["id"],
+                    name=row["name"],
+                    source_filename=row["source_filename"]
+                )
+                for row in rows
+            ]
+            return TopicsListResponse(topics=topics)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve topics: {str(e)}")
+
+
+@app.delete("/topics/{topic_id}")
+async def delete_topic(topic_id: str):
+    """
+    Delete a single topic by its UUID.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        async with db_pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM topics WHERE id = $1::uuid",
+                topic_id
+            )
+            deleted = int(result.replace("DELETE ", ""))
+            if deleted == 0:
+                raise HTTPException(status_code=404, detail="Topic not found")
+            return {"message": f"Deleted topic {topic_id}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete topic: {str(e)}")
+
+
+@app.post("/topics/regenerate")
+async def regenerate_topics():
+    """
+    Delete all existing topics and re-extract them from every uploaded textbook.
+    Useful when the user wants fresh topic extraction (e.g. after uploading new files).
+    Returns the total number of topics extracted.
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        # 1. Get all distinct textbook filenames
+        async with db_pool.acquire() as conn:
+            filenames = await conn.fetch(
+                """
+                SELECT DISTINCT metadata->>'filename' AS filename
+                FROM knowledge_base
+                WHERE source_type = 'textbook'
+                  AND metadata->>'filename' IS NOT NULL
+                """
+            )
+            textbook_filenames = [row["filename"] for row in filenames if row["filename"]]
+
+        if not textbook_filenames:
+            return {"message": "No textbooks found to extract topics from", "topics_extracted": 0}
+
+        # 2. Delete all existing topics
+        async with db_pool.acquire() as conn:
+            await conn.execute("DELETE FROM topics")
+
+        # 3. Re-extract topics for all textbooks concurrently
+        topic_extractor = TopicExtractor(db_pool)
+        tasks = [topic_extractor.extract_and_store(fn) for fn in textbook_filenames]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        total = 0
+        for fn, result in zip(textbook_filenames, results):
+            if isinstance(result, Exception):
+                print(f"  Regenerate: extraction failed for '{fn}': {result}")
+            else:
+                total += len(result)
+
+        return {
+            "message": f"Regenerated topics from {len(textbook_filenames)} textbook(s)",
+            "topics_extracted": total
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to regenerate topics: {str(e)}")
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -308,10 +424,22 @@ async def ingest_pdf(
             except Exception as e:
                 print(f"Style analysis skipped: {e}")
         
+        # Step 5: If textbook, extract and store topics
+        topics_extracted = 0
+        if source_type == 'textbook' and stats['chunks_stored'] > 0:
+            try:
+                topic_extractor = TopicExtractor(db_pool)
+                extracted_topics = await topic_extractor.extract_and_store(file.filename)
+                topics_extracted = len(extracted_topics)
+                print(f"✓ Extracted {topics_extracted} topics from {file.filename}")
+            except Exception as e:
+                print(f"Topic extraction skipped: {e}")
+        
         return IngestResponse(
             chunks_processed=stats['chunks_stored'],
             embeddings_created=stats['embeddings_generated'],
             images_processed=images_processed,
+            topics_extracted=topics_extracted,
             message=f"Successfully ingested {file.filename} as {source_type}"
         )
         
@@ -349,7 +477,7 @@ async def generate_questions(request: QuestionRequest):
         )
         
         questions = await rag_engine.generate_questions(
-            topic=request.topic,
+            topics=request.topics,
             count=request.count,
             difficulty=request.difficulty
         )
@@ -399,7 +527,7 @@ async def generate_questions_v2(request: QuestionRequest):
         )
         
         questions = await rag_engine.generate_questions(
-            topic=request.topic,
+            topics=request.topics,
             count=request.count,
             difficulty=request.difficulty
         )
@@ -546,7 +674,7 @@ async def generate_questions_stream(request: QuestionRequest):
             # Run generation in a separate task
             task = asyncio.create_task(
                 rag_engine.generate_questions(
-                    topic=request.topic,
+                    topics=request.topics,
                     count=request.count,
                     difficulty=request.difficulty,
                     progress_callback=progress_callback_wrapper,

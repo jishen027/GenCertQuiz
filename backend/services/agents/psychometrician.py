@@ -79,7 +79,7 @@ STRICT REQUIREMENTS:
 - Use EXACTLY 4 options (A, B, C, D)
 - {type_instruction}
 - For SINGLE_SELECT: Only ONE correct answer
-- For MULTIPLE_SELECTION: At least TWO correct answers AND append '(choice 2)' to question text
+- For MULTIPLE_SELECTION: TWO correct answers AND append '(choice 2)' to question text
 - Make distractors plausible but clearly wrong to knowledgeable candidates
 - Distractors should reflect common student misconceptions
 - Questions must be answerable from the provided RESEARCH_CONTENT

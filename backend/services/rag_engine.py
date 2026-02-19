@@ -108,7 +108,8 @@ class MultiAgentRAGEngine:
     
     async def generate_questions(
         self,
-        topic: str,
+        topic: str = "",
+        topics: Optional[List[str]] = None,
         count: int = 5,
         difficulty: str = "medium",
         max_total_attempts: int = 15,
@@ -116,21 +117,35 @@ class MultiAgentRAGEngine:
         question_callback: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
-        Generate multiple high-quality questions on a topic using the multi-agent pipeline.
-        
-        This is the main entry point for question generation.
-        
+        Generate multiple high-quality questions across one or more topics.
+
+        When multiple topics are provided, questions are distributed across them
+        in round-robin order so each topic gets roughly equal representation.
+
         Args:
-            topic: Question topic
+            topic: Single topic string (legacy, for backward compat)
+            topics: List of topic strings (preferred over `topic`)
             count: Number of questions to generate
             difficulty: Question difficulty (easy, medium, hard)
             max_total_attempts: Max total attempts (including retries)
             progress_callback: Async callback function(stage, message) for progress updates
             question_callback: Async callback function(question_dict) for streaming results
-            
+
         Returns:
             List of generated questions with full metadata
         """
+        # Resolve the final topics list
+        if topics and len(topics) > 0:
+            topic_list = [t.strip() for t in topics if t.strip()]
+        elif topic:
+            # Legacy: split on "; " in case the joined string was passed
+            topic_list = [t.strip() for t in topic.split(";") if t.strip()]
+        else:
+            topic_list = ["General Knowledge"]
+
+        if not topic_list:
+            topic_list = ["General Knowledge"]
+
         async def report_progress(stage: str, message: str):
             if progress_callback:
                 try:
@@ -145,63 +160,67 @@ class MultiAgentRAGEngine:
                 except Exception as e:
                     print(f"Question callback failed: {e}")
 
+        display_topic = "; ".join(topic_list)
         print(f"\n{'='*60}")
-        print(f"GENERATING {count} {difficulty.upper()} QUESTIONS ON: {topic}")
+        print(f"GENERATING {count} {difficulty.upper()} QUESTIONS ACROSS {len(topic_list)} TOPIC(S): {display_topic}")
         print(f"{'='*60}")
-        
-        await report_progress("init", f"Starting generation of {count} {difficulty} questions on '{topic}'")
-        
-        # Phase 1: Knowledge & Style Ingestion
-        print("\n📚 Phase 1: Knowledge & Style Ingestion")
+
+        await report_progress("init", f"Starting generation of {count} {difficulty} questions across {len(topic_list)} topic(s)")
+
+        # Phase 1: Shared Style Ingestion (topic-agnostic)
+        print("\n📚 Phase 1: Style Ingestion")
         print("-" * 40)
-        
-        # Researcher: Get facts from textbook
-        print(f"  • Researcher: Extracting facts for '{topic}'...")
-        await report_progress("research", f"Researcher: Analyzing textbook content for '{topic}'...")
-        research_brief = await self.researcher.research(topic, difficulty)
-        print(f"    ✓ Found {len(research_brief.core_facts)} core facts")
-        print(f"    ✓ Found {len(research_brief.key_definitions)} definitions")
-        print(f"    ✓ Found {len(research_brief.formulas_and_rules)} formulas/rules")
-        
-        await report_progress("research", f"Researcher: Found {len(research_brief.core_facts)} facts, {len(research_brief.key_definitions)} definitions")
-        
-        # Style Analyzer: Get style profile from past papers
         print(f"  • Style Analyzer: Extracting style profile...")
         await report_progress("style", "Style Analyzer: Extracting patterns from past papers...")
-        style_profile = await self.style_analyzer.get_style_profile(topic)
+        # Use first topic for style lookup (style is typically topic-agnostic in practice)
+        style_profile = await self.style_analyzer.get_style_profile(topic_list[0])
         if style_profile:
             print(f"    ✓ Style profile extracted")
-            print(f"      - Question stems: {len(style_profile.get('question_stems', []))}")
-            print(f"      - Complexity: {style_profile.get('complexity', 'unknown')}")
-            print(f"      - Common misconceptions: {len(style_profile.get('common_misconceptions', []))}")
             await report_progress("style", "Style Analyzer: Profile extracted successfully")
         else:
             print(f"    ⚠ No style profile found (no exam papers ingested)")
             await report_progress("style", "Style Analyzer: No past papers found, using default style")
-        
-        # Style Examples: Get sample questions
-        print(f"  • Retriever: Fetching style examples...")
-        style_examples = await self.retriever.fetch_style_examples(topic, limit=3)
+
+        style_examples = await self.retriever.fetch_style_examples(topic_list[0], limit=3)
         print(f"    ✓ Found {len(style_examples)} style examples")
+
+        # Cache research briefs per topic to avoid re-fetching on retries
+        research_cache: Dict[str, Any] = {}
         
         # Phase 2: Multi-Agent Generation Loop
         print(f"\n🤖 Phase 2: Multi-Agent Generation Loop")
         print("-" * 40)
-        
+
         questions = []
         attempts = 0
-        
+
         # Calculate how many multiple selection questions we need (20%)
         num_multi_questions = int(count * 0.2)
-        # We will generate multi-select questions at specific intervals to distribute them
-        # or simply force the first N questions to be multi-select.
-        # Let's use a simple counter approach.
         generated_multi_count = 0
-        
+
         while len(questions) < count and attempts < max_total_attempts:
             attempts += 1
             q_num = len(questions) + 1
-            print(f"\n  Question {q_num}/{count} (attempt {attempts})...")
+
+            # Round-robin topic assignment so each topic gets equal coverage
+            current_topic = topic_list[(q_num - 1) % len(topic_list)]
+            print(f"\n  Question {q_num}/{count} — topic: '{current_topic}' (attempt {attempts})...")
+
+            # Fetch (or reuse cached) research brief for this topic
+            if current_topic not in research_cache:
+                print(f"    • Researcher: Extracting facts for '{current_topic}'...")
+                await report_progress("research", f"Researcher: Analyzing textbook content for '{current_topic}'...")
+                try:
+                    brief = await self.researcher.research(current_topic, difficulty)
+                    research_cache[current_topic] = brief
+                    print(f"      ✓ Found {len(brief.core_facts)} facts, {len(brief.key_definitions)} definitions")
+                    await report_progress("research", f"Researcher: Found {len(brief.core_facts)} facts for '{current_topic}'")
+                except Exception as e:
+                    print(f"      ✗ Research failed for '{current_topic}': {e}")
+                    await report_progress("error", f"Research failed for '{current_topic}': {e}")
+                    continue
+
+            research_brief = research_cache[current_topic]
             
             # Determine forced type for this question
             # If we still need multi-select questions, and the current slot suggests it's time, or if we are running out of slots

@@ -1,13 +1,22 @@
-from typing import Literal, Dict, Any, List
+from typing import Literal, Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
 
 
 class QuestionRequest(BaseModel):
     """Request model for generating quiz questions"""
-    topic: str = Field(..., min_length=3, description="The topic to generate questions about")
+    topics: List[str] = Field(
+        ...,
+        min_length=1,
+        description="List of topics to generate questions about (at least one required)"
+    )
     difficulty: Literal["easy", "medium", "hard"] = Field(default="medium", description="Question difficulty level")
     count: int = Field(default=5, ge=1, le=50, description="Number of questions to generate")
+
+    @property
+    def topic(self) -> str:
+        """Combine selected topics into a single string for the generation pipeline."""
+        return "; ".join(t.strip() for t in self.topics if t.strip())
 
 
 class ExportRequest(BaseModel):
@@ -96,6 +105,7 @@ class IngestResponse(BaseModel):
     chunks_processed: int
     embeddings_created: int
     images_processed: int = 0
+    topics_extracted: int = 0
     message: str
 
 
@@ -151,6 +161,18 @@ class FilesResponse(BaseModel):
     """Response model for listing uploaded files"""
     textbooks: List[FileInfo] = Field(default_factory=list)
     exam_papers: List[FileInfo] = Field(default_factory=list)
+
+
+class TopicItem(BaseModel):
+    """A single extracted topic"""
+    id: str
+    name: str
+    source_filename: str
+
+
+class TopicsListResponse(BaseModel):
+    """Response model for listing all available topics"""
+    topics: List[TopicItem] = Field(default_factory=list)
 
 
 class AnalysisResult(BaseModel):
