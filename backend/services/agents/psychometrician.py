@@ -133,7 +133,7 @@ Create ONE question that:
             user_prompt=user_prompt,
             model_class=DraftedQuestion,
             temperature=0.7,  # Higher temperature for creative question drafting
-            max_tokens=2048
+            max_completion_tokens=4096
         )
     
     async def revise_question(
@@ -194,7 +194,7 @@ Ensure the revision:
             user_prompt=user_prompt,
             model_class=DraftedQuestion,
             temperature=0.6,
-            max_tokens=2048
+            max_completion_tokens=4096
         )
     
     def _format_research_brief(self, brief: ResearchBrief) -> str:

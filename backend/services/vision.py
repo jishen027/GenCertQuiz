@@ -6,19 +6,19 @@ from typing import Optional
 
 
 class VisionService:
-    """Extract technical details from images using Claude Vision"""
+    """Extract technical details from images using OpenAI GPT-5 Vision"""
     
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o"
+        model: str = "gpt-5"
     ):
         """
         Initialize the vision service.
         
         Args:
             api_key: OpenAI API key (defaults to env var)
-            model: OpenAI model with vision capabilities (default: gpt-4o)
+            model: OpenAI model with vision capabilities (default: gpt-5)
         """
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -62,7 +62,7 @@ Be thorough and precise. This description will be used to generate exam question
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=1024,
+                max_completion_tokens=1024,
                 messages=[
                     {
                         "role": "user",

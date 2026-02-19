@@ -470,12 +470,12 @@ class DualPathRetriever:
 
 
 class QuestionGenerator:
-    """Generate exam questions using OpenAI GPT-4"""
+    """Generate exam questions using OpenAI GPT-5"""
     
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o"
+        model: str = "gpt-5"
     ):
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -537,8 +537,8 @@ Return ONLY valid JSON in this exact format:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.7,
-                max_tokens=1024,
+                # Note: GPT-5 only supports temperature=1 (the default). Do not pass temperature.
+                max_completion_tokens=1024,
                 response_format={"type": "json_object"}
             )
             

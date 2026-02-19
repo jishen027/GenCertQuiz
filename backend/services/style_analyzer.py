@@ -227,7 +227,7 @@ Be specific and thorough in your analysis."""
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.3,
-            max_tokens=2048
+            max_completion_tokens=4096
         )
         
         return response

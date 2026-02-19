@@ -41,8 +41,8 @@ class ResearcherAgent(BaseAgent):
         self,
         topic: str,
         difficulty: str,
-        max_facts: int = 10,
-        max_context_chunks: int = 15
+        max_facts: int = 6,
+        max_context_chunks: int = 8
     ) -> ResearchBrief:
         """
         Conduct research on a topic at a specified difficulty level.
@@ -87,7 +87,8 @@ For difficulty levels:
 - MEDIUM: Include relationships between concepts, moderate complexity
 - HARD: Include edge cases, exceptions, advanced nuances, interdependencies
 
-CRITICAL: Only use information from the provided TEXTBOOK_CONTENT. Do not hallucinate or add external knowledge."""
+CRITICAL: Only use information from the provided TEXTBOOK_CONTENT. Do not hallucinate or add external knowledge.
+Be concise: keep fact statements under 30 words, definitions under 25 words, summaries under 50 words."""
 
         user_prompt = f"""Research the following topic and create a comprehensive research brief.
 
@@ -131,7 +132,7 @@ Extract up to {max_facts} core facts, prioritized by relevance and importance.""
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.3,  # Lower temperature for factual accuracy
-            max_tokens=2048
+            max_completion_tokens=8192
         )
         
         return ResearchBrief(**response_dict)

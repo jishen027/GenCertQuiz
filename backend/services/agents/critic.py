@@ -141,7 +141,7 @@ Be specific and thorough in your evaluation. If a check fails, explain exactly w
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.3,  # Lower temperature for consistent evaluation
-            max_tokens=2048
+            max_completion_tokens=4096
         )
         
         review = CritiqueReview(**response_dict)

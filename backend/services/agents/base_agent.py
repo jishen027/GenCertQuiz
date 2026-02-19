@@ -12,7 +12,7 @@ class BaseAgent:
     Base class for all agents in the multi-agent system.
     
     Provides:
-    - Shared Anthropic Claude client
+    - Shared OpenAI GPT-5 client
     - Structured JSON output parsing
     - Retry logic for failed API calls
     - Common prompt building utilities
@@ -21,7 +21,7 @@ class BaseAgent:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o",
+        model: str = "gpt-5",
         max_retries: int = 3
     ):
         """
@@ -29,7 +29,7 @@ class BaseAgent:
         
         Args:
             api_key: OpenAI API key (defaults to env var)
-            model: OpenAI model to use (default: gpt-4o)
+            model: OpenAI model to use (default: gpt-5)
             max_retries: Maximum retry attempts for failed calls
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -45,8 +45,8 @@ class BaseAgent:
         self,
         system_prompt: str,
         user_prompt: str,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
+        temperature: float = 1.0,
+        max_completion_tokens: int = 4096,
         json_mode: bool = True
     ) -> str:
         """
@@ -55,8 +55,8 @@ class BaseAgent:
         Args:
             system_prompt: System-level instructions
             user_prompt: User query/task
-            temperature: Sampling temperature (0-2)
-            max_tokens: Maximum tokens in response
+            temperature: Ignored for GPT-5 (only default of 1 is supported)
+            max_completion_tokens: Maximum tokens in response (GPT-5 parameter)
             json_mode: If True, request JSON output (via response_format)
             
         Returns:
@@ -72,8 +72,9 @@ class BaseAgent:
                 kwargs = {
                     "model": self.model,
                     "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens
+                    # Note: GPT-5 only supports temperature=1 (the default).
+                    # Do NOT pass temperature to the API — any other value causes a 400 error.
+                    "max_completion_tokens": max_completion_tokens
                 }
                 
                 if json_mode:
@@ -81,7 +82,19 @@ class BaseAgent:
                 
                 response = await self.client.chat.completions.create(**kwargs)
                 
-                return response.choices[0].message.content
+                choice = response.choices[0]
+                content = choice.message.content
+                
+                # GPT-5 can return None content (e.g. refusal, empty output)
+                if not content:
+                    refusal = getattr(choice.message, 'refusal', None)
+                    raise RuntimeError(
+                        f"GPT-5 returned empty content. "
+                        f"finish_reason={choice.finish_reason}, "
+                        f"refusal={refusal}"
+                    )
+                
+                return content
                 
             except Exception as e:
                 if attempt == self.max_retries - 1:
@@ -95,8 +108,8 @@ class BaseAgent:
         self,
         system_prompt: str,
         user_prompt: str,
-        temperature: float = 0.7,
-        max_tokens: int = 4096
+        temperature: float = 1.0,
+        max_completion_tokens: int = 4096
     ) -> Dict[str, Any]:
         """
         Call the LLM and parse JSON response.
@@ -104,8 +117,8 @@ class BaseAgent:
         Args:
             system_prompt: System-level instructions
             user_prompt: User query/task
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            temperature: Ignored for GPT-5 (only default of 1 is supported)
+            max_completion_tokens: Maximum tokens in response (GPT-5 parameter)
             
         Returns:
             Parsed JSON dict
@@ -118,7 +131,7 @@ class BaseAgent:
             system_prompt=system_prompt,
             user_prompt=full_user_prompt,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_completion_tokens=max_completion_tokens
         )
         
         # Parse JSON response
@@ -146,8 +159,8 @@ class BaseAgent:
         system_prompt: str,
         user_prompt: str,
         model_class: type[BaseModel],
-        temperature: float = 0.7,
-        max_tokens: int = 4096
+        temperature: float = 1.0,
+        max_completion_tokens: int = 4096
     ) -> BaseModel:
         """
         Call the LLM and parse response into a Pydantic model.
@@ -156,8 +169,8 @@ class BaseAgent:
             system_prompt: System-level instructions
             user_prompt: User query/task
             model_class: Pydantic model class to parse into
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens in response
+            temperature: Ignored for GPT-5 (only default of 1 is supported)
+            max_completion_tokens: Maximum tokens in response (GPT-5 parameter)
             
         Returns:
             Instance of the Pydantic model
@@ -173,7 +186,7 @@ class BaseAgent:
             system_prompt=full_system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_completion_tokens=max_completion_tokens
         )
         
         return model_class(**response_dict)
