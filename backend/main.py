@@ -22,7 +22,9 @@ from models.schemas import (
     AnalysisResult,
     ExportRequest,
     TopicItem,
-    TopicsListResponse
+    TopicsListResponse,
+    QuestionResponseExamSystem,
+    ExamSystemOption
 )
 from services.pdf_parser import PDFParser
 from services.embedder import EmbeddingService
@@ -539,6 +541,94 @@ async def generate_questions_v2(request: QuestionRequest):
             )
         
         return [QuestionResponseV2(**q) for q in questions]
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+
+@app.post("/generate/exam-format", response_model=List[QuestionResponseExamSystem])
+async def generate_questions_exam_format(request: QuestionRequest):
+    """
+    Generate exam questions in the specific format required for the exam system upload.
+    
+    Format features:
+    - Options as list of objects with id and content
+    - Correct answers as list of IDs (1-based index)
+    - Domain field
+    - Tags list
+    
+    Args:
+        request: Question generation parameters
+        
+    Returns:
+        List of generated questions in exam system format
+    """
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        embedder = EmbeddingService(db_pool)
+        rag_engine = MultiAgentRAGEngine(
+            db_pool,
+            embedder,
+            similarity_threshold=float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
+        )
+        
+        # Use v2 generation to get full metadata including topic/domain
+        questions = await rag_engine.generate_questions(
+            topics=request.topics,
+            count=request.count,
+            difficulty=request.difficulty
+        )
+        
+        if not questions:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not generate questions for topic: {request.topic}"
+            )
+        
+        # Transform to exam system format
+        exam_questions = []
+        for idx, q in enumerate(questions):
+            # Transform options map {"A": "...", "B": "..."} to list of objects
+            options_list = []
+            option_map = {"A": 1, "B": 2, "C": 3, "D": 4}
+            
+            # Sort options by key to ensure A, B, C, D order
+            sorted_keys = sorted(q["options"].keys())
+            for key in sorted_keys:
+                options_list.append(ExamSystemOption(
+                    id=option_map.get(key, 0),
+                    content=q["options"][key]
+                ))
+            
+            # Transform answer "A" or "A, C" to list of IDs [1] or [1, 3]
+            correct_answers = []
+            if isinstance(q["answer"], str):
+                # Handle single "A" or multiple "A, C"
+                answers = [a.strip() for a in q["answer"].split(",")]
+                for ans in answers:
+                    if ans in option_map:
+                        correct_answers.append(option_map[ans])
+            
+            # Construct final object
+            # Use 'topic' from question metadata if available, otherwise from request
+            # Fallback to "General" if both missing
+            domain = q.get("topic", "General")
+            
+            exam_questions.append(QuestionResponseExamSystem(
+                id=idx + 1,
+                question=q["question"],
+                options=options_list,
+                correct_answers=correct_answers,
+                explanation=q["explanation"],
+                domain=domain,
+                tags=[domain]
+            ))
+            
+        return exam_questions
         
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

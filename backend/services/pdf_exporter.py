@@ -121,18 +121,39 @@ class PDFExporter:
             ))
             
             # Options
-            for key, value in q['options'].items():
-                is_correct = (key == q['answer'])
-                option_text = f"<b>{key}.</b> {value}"
-                if is_correct:
-                    option_text += " <b>✓</b>"
-                story.append(Paragraph(option_text, self.styles['Option']))
+            if isinstance(q['options'], dict):
+                # Legacy format: Dict[str, str]
+                for key, value in q['options'].items():
+                    is_correct = (key == q['answer'])
+                    option_text = f"<b>{key}.</b> {value}"
+                    if is_correct:
+                        option_text += " <b>✓</b>"
+                    story.append(Paragraph(option_text, self.styles['Option']))
+            elif isinstance(q['options'], list):
+                # Exam format: List[Dict[str, Any]] (id, content)
+                for opt in q['options']:
+                    # Check if this option ID is in correct_answers list
+                    is_correct = False
+                    if 'correct_answers' in q and isinstance(q['correct_answers'], list):
+                        is_correct = opt['id'] in q['correct_answers']
+                    
+                    option_text = f"<b>{opt['id']}.</b> {opt['content']}"
+                    if is_correct:
+                        option_text += " <b>✓</b>"
+                    story.append(Paragraph(option_text, self.styles['Option']))
             
             # Answer
-            story.append(Paragraph(
-                f"<b>Correct Answer:</b> {q['answer']}",
-                self.styles['Answer']
-            ))
+            if 'correct_answers' in q and isinstance(q['correct_answers'], list):
+                 answer_text = ", ".join(str(aid) for aid in q['correct_answers'])
+                 story.append(Paragraph(
+                    f"<b>Correct Answer(s):</b> {answer_text}",
+                    self.styles['Answer']
+                ))
+            else:
+                story.append(Paragraph(
+                    f"<b>Correct Answer:</b> {q.get('answer', 'N/A')}",
+                    self.styles['Answer']
+                ))
             
             # Explanation
             story.append(Paragraph(

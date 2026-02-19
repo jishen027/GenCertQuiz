@@ -180,3 +180,20 @@ class AnalysisResult(BaseModel):
     source_filename: str
     chunk_count: int
     profile: StyleProfile
+
+
+class ExamSystemOption(BaseModel):
+    """Option model for exam system format"""
+    id: int
+    content: str
+
+
+class QuestionResponseExamSystem(BaseModel):
+    """Response model for exam system format"""
+    id: int
+    question: str
+    options: List[ExamSystemOption]
+    correct_answers: List[int]
+    explanation: str
+    domain: str
+    tags: List[str]

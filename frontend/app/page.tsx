@@ -435,18 +435,59 @@ export default function Home() {
     downloadAnchorNode.remove();
   };
 
+  // Helper: Convert to Exam System Format
+  const convertToExamFormat = (questionsToConvert: Question[]) => {
+    return questionsToConvert.map((q, idx) => {
+      // Transform options map {"A": "...", "B": "..."} to list of objects
+      const optionsList = [];
+      const optionMap: Record<string, number> = { "A": 1, "B": 2, "C": 3, "D": 4 };
+      
+      const sortedKeys = Object.keys(q.options).sort();
+      for (const key of sortedKeys) {
+        // key is A, B, C, D
+        // @ts-ignore - we know key is valid key of q.options
+        optionsList.push({
+          id: optionMap[key] || 0,
+          content: q.options[key as keyof typeof q.options]
+        });
+      }
+      
+      // Transform answer "A" or "A, C" to list of IDs [1] or [1, 3]
+      const correctAnswers = [];
+      const answers = q.answer.split(',').map(a => a.trim());
+      for (const ans of answers) {
+        if (optionMap[ans]) {
+          correctAnswers.push(optionMap[ans]);
+        }
+      }
+      
+      return {
+        id: idx + 1,
+        question: q.question,
+        options: optionsList,
+        correct_answers: correctAnswers,
+        explanation: q.explanation,
+        domain: q.topic || 'General',
+        tags: [q.topic || 'General']
+      };
+    });
+  };
+
   const handleDownloadPDF = async () => {
     if (questions.length === 0) return;
     
     try {
       const allTopics = selectedTopics.join('; ');
+      // Convert to exam format first
+      const examQuestions = convertToExamFormat(questions);
+      
       const response = await fetch('http://localhost:8000/export-pdf', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          questions: questions,
+          questions: examQuestions, // Send converted questions
           topic: allTopics,
           difficulty: complexity
         }),
@@ -469,6 +510,26 @@ export default function Home() {
       console.error('PDF download error:', error);
       setError('Failed to download PDF. Please try again.');
     }
+  };
+
+  const handleDownloadExamFormat = () => {
+    if (questions.length === 0) return;
+    
+    const examQuestions = convertToExamFormat(questions);
+    
+    // Wrap in object with "questions" key as required by exam system
+    const exportData = {
+      questions: examQuestions
+    };
+      
+    const allTopics = selectedTopics.join('_').replace(/\s+/g, '_') || 'exam';
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `${allTopics}_exam_format.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
   };
 
   return (
@@ -830,6 +891,14 @@ export default function Home() {
               <div className="h-[1px] flex-grow bg-[#E5E7EB] mr-4"></div>
               
               <div className="flex gap-2">
+                <button 
+                  onClick={handleDownloadExamFormat}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors"
+                  title="Download in Exam System Format"
+                >
+                  <FileJson className="w-3.5 h-3.5" />
+                  Exam Format
+                </button>
                 <button 
                   onClick={handleDownloadJSON}
                   className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded transition-colors"
