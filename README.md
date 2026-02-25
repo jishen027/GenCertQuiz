@@ -3,8 +3,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
+[![Live Platform](https://img.shields.io/badge/Live-Hiiragi_Exam-00C7B7?style=flat&logo=web)](https://www.hiiragiexam.com/)
 
-> **Don't just read the textbook—master it.** GenCertQuiz uses a sophisticated RAG-powered Multi-Agent system to analyze your study materials and generate high-quality, exam-style quizzes that mimic real certification standards.
+> **Don't just read the textbook—master it.** GenCertQuiz is the open-source engine powering [Hiiragi Exam](https://www.hiiragiexam.com/). It uses a sophisticated RAG-powered Multi-Agent system to analyze your study materials and generate high-quality, exam-style quizzes that mimic real certification standards.
+
+## 🌐 See it in Action
+
+Check out the official platform built on top of this repository: **[Hiiragi Exam](https://www.hiiragiexam.com/)**
+
+---
 
 ## 🌟 Why GenCertQuiz?
 Most AI quiz generators just rephrase text. GenCertQuiz acts like a professional exam board:
